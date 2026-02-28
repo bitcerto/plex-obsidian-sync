@@ -27,6 +27,9 @@ interface UserResponse {
   id?: number;
   username?: string;
   email?: string;
+  locale?: string;
+  language?: string;
+  lang?: string;
 }
 
 export class PlexTvClient {

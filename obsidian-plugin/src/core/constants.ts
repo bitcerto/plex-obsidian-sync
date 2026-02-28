@@ -38,9 +38,75 @@ export const MANAGED_KEYS = [
 
 export const SYNC_FIELDS = new Set<string>(["sincronizado_em", "sincronizado_por"]);
 
-// Mapeia chaves internas (canonicas) para chaves mais legiveis no frontmatter salvo em arquivo.
-// A leitura continua aceitando ambos os formatos para manter compatibilidade.
-export const PROPERTY_KEY_ALIASES: Record<string, string> = {
+// Mapeia chaves internas (canonicas) para chaves externas no frontmatter.
+// O plugin aceita aliases em portugues e ingles durante a leitura para manter compatibilidade.
+const PROPERTY_KEY_ALIASES_PT_BR: Record<string, string> = {
+  plex_rating_key: "plex rating key",
+  plex_parent_rating_key: "plex parent rating key",
+  plex_guid: "plex guid",
+  biblioteca: "biblioteca",
+  tipo: "tipo",
+  titulo: "titulo",
+  serie_titulo: "serie titulo",
+  serie_rating_key: "serie rating key",
+  titulo_original: "titulo original",
+  ano: "ano",
+  temporada_numero: "temporada numero",
+  episodio_numero: "episodio numero",
+  resumo: "resumo",
+  nota_critica: "nota critica",
+  nota_critica_fonte: "nota critica fonte",
+  nota_publico: "nota publico",
+  nota_publico_fonte: "nota publico fonte",
+  capa_url: "capa url",
+  fundo_url: "fundo url",
+  duracao_minutos: "duracao minutos",
+  temporadas: "temporadas",
+  episodios: "episodios",
+  episodios_assistidos: "episodios assistidos",
+  assistido: "assistido",
+  na_lista_para_assistir: "na lista para assistir",
+  na_watchlist: "na watchlist",
+  ultima_visualizacao_plex: "ultima visualizacao plex",
+  atualizado_plex_em: "atualizado plex em",
+  sincronizado_em: "sincronizado em",
+  sincronizado_por: "sincronizado por"
+};
+
+const PROPERTY_KEY_ALIASES_EN_US: Record<string, string> = {
+  plex_rating_key: "plex rating key",
+  plex_parent_rating_key: "plex parent rating key",
+  plex_guid: "plex guid",
+  biblioteca: "library",
+  tipo: "type",
+  titulo: "title",
+  serie_titulo: "series title",
+  serie_rating_key: "series rating key",
+  titulo_original: "original title",
+  ano: "year",
+  temporada_numero: "season number",
+  episodio_numero: "episode number",
+  resumo: "summary",
+  nota_critica: "critic rating",
+  nota_critica_fonte: "critic rating source",
+  nota_publico: "audience rating",
+  nota_publico_fonte: "audience rating source",
+  capa_url: "poster url",
+  fundo_url: "background url",
+  duracao_minutos: "duration minutes",
+  temporadas: "seasons",
+  episodios: "episodes",
+  episodios_assistidos: "watched episodes",
+  assistido: "watched",
+  na_lista_para_assistir: "in watchlist",
+  na_watchlist: "in watchlist legacy",
+  ultima_visualizacao_plex: "last viewed at plex",
+  atualizado_plex_em: "updated at plex",
+  sincronizado_em: "synced at",
+  sincronizado_por: "synced by"
+};
+
+const LEGACY_PROPERTY_KEY_ALIASES_PT_BR: Record<string, string> = {
   plex_rating_key: "plex-rating-key",
   plex_parent_rating_key: "plex-parent-rating-key",
   plex_guid: "plex-guid",
@@ -65,9 +131,85 @@ export const PROPERTY_KEY_ALIASES: Record<string, string> = {
   sincronizado_por: "sincronizado-por"
 };
 
-export const PROPERTY_KEY_ALIASES_REVERSE: Record<string, string> = Object.fromEntries(
-  Object.entries(PROPERTY_KEY_ALIASES).map(([canonical, external]) => [external, canonical])
+const LEGACY_PROPERTY_KEY_ALIASES_EN_US: Record<string, string> = {
+  plex_rating_key: "plex-rating-key",
+  plex_parent_rating_key: "plex-parent-rating-key",
+  plex_guid: "plex-guid",
+  serie_titulo: "series-title",
+  serie_rating_key: "series-rating-key",
+  titulo_original: "original-title",
+  temporada_numero: "season-number",
+  episodio_numero: "episode-number",
+  nota_critica: "critic-rating",
+  nota_critica_fonte: "critic-rating-source",
+  nota_publico: "audience-rating",
+  nota_publico_fonte: "audience-rating-source",
+  capa_url: "poster-url",
+  fundo_url: "background-url",
+  duracao_minutos: "duration-minutes",
+  episodios_assistidos: "watched-episodes",
+  na_lista_para_assistir: "in-watchlist",
+  na_watchlist: "in-watchlist-legacy",
+  ultima_visualizacao_plex: "last-viewed-at-plex",
+  atualizado_plex_em: "updated-at-plex",
+  sincronizado_em: "synced-at",
+  sincronizado_por: "synced-by"
+};
+
+const PROPERTY_KEY_ALIASES_BY_LANGUAGE = {
+  pt_br: PROPERTY_KEY_ALIASES_PT_BR,
+  en_us: PROPERTY_KEY_ALIASES_EN_US
+} as const;
+
+const PROPERTY_KEY_ALIASES_REVERSE_PT_BR: Record<string, string> = Object.fromEntries(
+  Object.entries(PROPERTY_KEY_ALIASES_PT_BR).map(([canonical, external]) => [external, canonical])
 );
+
+const PROPERTY_KEY_ALIASES_REVERSE_EN_US: Record<string, string> = Object.fromEntries(
+  Object.entries(PROPERTY_KEY_ALIASES_EN_US).map(([canonical, external]) => [external, canonical])
+);
+
+const PROPERTY_KEY_ALIASES_REVERSE_LEGACY_PT_BR: Record<string, string> = Object.fromEntries(
+  Object.entries(LEGACY_PROPERTY_KEY_ALIASES_PT_BR).map(([canonical, external]) => [
+    external,
+    canonical
+  ])
+);
+
+const PROPERTY_KEY_ALIASES_REVERSE_LEGACY_EN_US: Record<string, string> = Object.fromEntries(
+  Object.entries(LEGACY_PROPERTY_KEY_ALIASES_EN_US).map(([canonical, external]) => [
+    external,
+    canonical
+  ])
+);
+
+export const PROPERTY_KEY_ALIASES_REVERSE: Record<string, string> = {
+  ...PROPERTY_KEY_ALIASES_REVERSE_PT_BR,
+  ...PROPERTY_KEY_ALIASES_REVERSE_EN_US,
+  ...PROPERTY_KEY_ALIASES_REVERSE_LEGACY_PT_BR,
+  ...PROPERTY_KEY_ALIASES_REVERSE_LEGACY_EN_US
+};
+
+export function resolveFrontmatterAliasLanguage(
+  mode: PlexSyncSettings["frontmatterKeyLanguage"],
+  plexLocale: string
+): "pt_br" | "en_us" {
+  if (mode === "pt_br" || mode === "en_us") {
+    return mode;
+  }
+  if (typeof plexLocale === "string" && plexLocale.trim().toLowerCase().startsWith("pt")) {
+    return "pt_br";
+  }
+  return "en_us";
+}
+
+export function getPropertyAliases(settings: Pick<PlexSyncSettings, "frontmatterKeyLanguage" | "plexAccountLocale">): Record<string, string> {
+  const language = resolveFrontmatterAliasLanguage(
+    settings.frontmatterKeyLanguage,
+    settings.plexAccountLocale
+  );
+  return PROPERTY_KEY_ALIASES_BY_LANGUAGE[language];
+}
 
 export const TECH_FILES = {
   state: ".plex-obsidian-state.json",
@@ -79,6 +221,7 @@ export const TECH_FILES = {
 export const DEFAULT_SETTINGS: PlexSyncSettings = {
   authMode: "hybrid_account",
   plexAccountToken: "",
+  plexAccountLocale: "",
   plexClientIdentifier: "",
   selectedServerMachineId: "",
   connectionStrategy: "remote_first",
@@ -89,6 +232,8 @@ export const DEFAULT_SETTINGS: PlexSyncSettings = {
   libraries: [],
   notesFolder: "Media-Plex",
   conflictPolicy: "latest",
+  frontmatterKeyLanguage: "auto_plex",
+  autoSyncEnabled: false,
   syncIntervalSeconds: 60,
   syncOnStartup: true,
   startupDelaySeconds: 15,

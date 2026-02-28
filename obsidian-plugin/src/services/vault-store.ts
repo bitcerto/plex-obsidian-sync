@@ -1,18 +1,22 @@
 import { App, TFile } from "obsidian";
 import matter from "gray-matter";
 import {
+  getPropertyAliases,
   MANAGED_KEYS,
-  PROPERTY_KEY_ALIASES,
   PROPERTY_KEY_ALIASES_REVERSE
 } from "../core/constants";
 import { normalizeVaultPath } from "../core/utils";
-import type { NoteData } from "../types";
+import type { NoteData, PlexSyncSettings } from "../types";
+
+type FrontmatterAliasSettings = Pick<PlexSyncSettings, "frontmatterKeyLanguage" | "plexAccountLocale">;
 
 export class VaultStore {
   private app: App;
+  private settingsProvider?: () => FrontmatterAliasSettings;
 
-  constructor(app: App) {
+  constructor(app: App, settingsProvider?: () => FrontmatterAliasSettings) {
     this.app = app;
+    this.settingsProvider = settingsProvider;
   }
 
   async ensureFolder(folderPath: string): Promise<void> {
@@ -64,7 +68,10 @@ export class VaultStore {
 
   renderMarkdown(frontmatter: Record<string, unknown>, body: string): string {
     const ordered = orderFrontmatter(frontmatter);
-    const externalKeys = denormalizeFrontmatterKeys(ordered);
+    const externalKeys = denormalizeFrontmatterKeys(
+      ordered,
+      resolveAliasSettings(this.settingsProvider)
+    );
     const normalizedBody = body.replace(/^\n+/, "");
     const rendered = matter.stringify(normalizedBody, externalKeys);
 
@@ -190,13 +197,30 @@ function normalizeFrontmatterKeys(frontmatter: Record<string, unknown>): Record<
   return normalized;
 }
 
-function denormalizeFrontmatterKeys(frontmatter: Record<string, unknown>): Record<string, unknown> {
+function denormalizeFrontmatterKeys(
+  frontmatter: Record<string, unknown>,
+  aliasSettings: FrontmatterAliasSettings
+): Record<string, unknown> {
+  const aliases = getPropertyAliases(aliasSettings);
   const denormalized: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(frontmatter)) {
-    const external = PROPERTY_KEY_ALIASES[key] ?? key;
+    const external = aliases[key] ?? key;
     denormalized[external] = value;
   }
 
   return denormalized;
+}
+
+function resolveAliasSettings(
+  settingsProvider?: () => FrontmatterAliasSettings
+): FrontmatterAliasSettings {
+  if (!settingsProvider) {
+    return { frontmatterKeyLanguage: "pt_br", plexAccountLocale: "pt-BR" };
+  }
+  try {
+    return settingsProvider();
+  } catch {
+    return { frontmatterKeyLanguage: "pt_br", plexAccountLocale: "pt-BR" };
+  }
 }

@@ -3,6 +3,7 @@ import type {
   AuthMode,
   ConflictPolicy,
   ConnectionStrategy,
+  FrontmatterKeyLanguage,
   PlexSyncSettings
 } from "../types";
 
@@ -13,6 +14,7 @@ interface SettingsHost {
   loginWithPlexAccount: () => Promise<void>;
   refreshPlexServers: () => Promise<void>;
   logoutPlexAccount: () => Promise<void>;
+  getResolvedFrontmatterLanguageLabel?: () => string;
 }
 
 export class PlexSyncSettingTab extends PluginSettingTab {
@@ -253,44 +255,82 @@ export class PlexSyncSettingTab extends PluginSettingTab {
           })
       );
 
+    const resolvedLanguage =
+      this.host.getResolvedFrontmatterLanguageLabel?.() ??
+      (this.host.settings.plexAccountLocale || "en-US (fallback)");
+
+    new Setting(containerEl)
+      .setName("Idioma das propriedades do frontmatter")
+      .setDesc(`Auto usa idioma da conta Plex atual (${resolvedLanguage})`)
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("auto_plex", "Auto (Plex)")
+          .addOption("pt_br", "Portugues (pt-BR)")
+          .addOption("en_us", "English (en-US)")
+          .setValue(this.host.settings.frontmatterKeyLanguage)
+          .onChange(async (value) => {
+            this.host.settings.frontmatterKeyLanguage = value as FrontmatterKeyLanguage;
+            await this.host.saveSettings();
+            this.display();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Sync automatico")
+      .setDesc("Quando desligado, o Plex -> Obsidian roda apenas em 'Sync Now'")
+      .addToggle((toggle) =>
+        toggle.setValue(this.host.settings.autoSyncEnabled).onChange(async (value) => {
+          this.host.settings.autoSyncEnabled = value;
+          await this.host.saveSettings();
+          this.display();
+        })
+      );
+
+    const autoSyncEnabled = this.host.settings.autoSyncEnabled;
+
     new Setting(containerEl)
       .setName("Intervalo de sync (segundos)")
       .setDesc("Minimo 30")
-      .addText((text) =>
+      .addText((text) => {
         text
           .setValue(String(this.host.settings.syncIntervalSeconds))
+          .setDisabled(!autoSyncEnabled)
           .onChange(async (value) => {
             const parsed = Number(value);
             this.host.settings.syncIntervalSeconds = Number.isFinite(parsed)
               ? Math.max(30, Math.floor(parsed))
               : 60;
             await this.host.saveSettings();
-          })
-      );
+          });
+      });
 
     new Setting(containerEl)
       .setName("Sync no startup")
-      .addToggle((toggle) =>
-        toggle.setValue(this.host.settings.syncOnStartup).onChange(async (value) => {
-          this.host.settings.syncOnStartup = value;
-          await this.host.saveSettings();
-        })
-      );
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.host.settings.syncOnStartup)
+          .setDisabled(!autoSyncEnabled)
+          .onChange(async (value) => {
+            this.host.settings.syncOnStartup = value;
+            await this.host.saveSettings();
+          });
+      });
 
     new Setting(containerEl)
       .setName("Delay startup (segundos)")
       .setDesc("Aguardar antes de iniciar o sync inicial")
-      .addText((text) =>
+      .addText((text) => {
         text
           .setValue(String(this.host.settings.startupDelaySeconds))
+          .setDisabled(!autoSyncEnabled)
           .onChange(async (value) => {
             const parsed = Number(value);
             this.host.settings.startupDelaySeconds = Number.isFinite(parsed)
               ? Math.max(0, Math.floor(parsed))
               : 15;
             await this.host.saveSettings();
-          })
-      );
+          });
+      });
   }
 
   private renderAdvancedSettings(containerEl: HTMLElement): void {

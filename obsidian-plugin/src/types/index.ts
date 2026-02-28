@@ -1,6 +1,7 @@
 export type ConflictPolicy = "latest" | "plex" | "obsidian";
 export type AuthMode = "hybrid_account" | "account_only" | "manual";
 export type ConnectionStrategy = "remote_first" | "local_first" | "local_only";
+export type FrontmatterKeyLanguage = "auto_plex" | "pt_br" | "en_us";
 
 export interface PlexConnection {
   uri: string;
@@ -43,6 +44,7 @@ export interface PlexDiscoverSearchItem {
 export interface PlexSyncSettings {
   authMode: AuthMode;
   plexAccountToken: string;
+  plexAccountLocale: string;
   plexClientIdentifier: string;
   selectedServerMachineId: string;
   connectionStrategy: ConnectionStrategy;
@@ -53,6 +55,8 @@ export interface PlexSyncSettings {
   libraries: string[];
   notesFolder: string;
   conflictPolicy: ConflictPolicy;
+  frontmatterKeyLanguage: FrontmatterKeyLanguage;
+  autoSyncEnabled: boolean;
   syncIntervalSeconds: number;
   syncOnStartup: boolean;
   startupDelaySeconds: number;

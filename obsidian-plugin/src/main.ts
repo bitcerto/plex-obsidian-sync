@@ -52,10 +52,20 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   }
 
   async saveSettings(): Promise<void> {
-    this.settings.syncIntervalSeconds = ensureMinNumber(this.settings.syncIntervalSeconds, 30);
+    this.settings.autoSyncEnabled = Boolean(this.settings.autoSyncEnabled);
+    this.settings.syncIntervalSeconds = this.settings.autoSyncEnabled
+      ? ensureMinNumber(this.settings.syncIntervalSeconds, 30)
+      : Math.max(0, Math.floor(Number(this.settings.syncIntervalSeconds) || 0));
     this.settings.startupDelaySeconds = Math.max(0, Math.floor(this.settings.startupDelaySeconds));
     this.settings.lockTtlSeconds = ensureMinNumber(this.settings.lockTtlSeconds, 30);
     this.settings.requestTimeoutSeconds = ensureMinNumber(this.settings.requestTimeoutSeconds, 5);
+
+    if (this.settings.frontmatterKeyLanguage !== "auto_plex" && this.settings.frontmatterKeyLanguage !== "pt_br" && this.settings.frontmatterKeyLanguage !== "en_us") {
+      this.settings.frontmatterKeyLanguage = "auto_plex";
+    }
+    if (typeof this.settings.plexAccountLocale !== "string") {
+      this.settings.plexAccountLocale = "";
+    }
 
     if (!Array.isArray(this.settings.libraries)) {
       this.settings.libraries = [];
@@ -109,8 +119,12 @@ export default class PlexObsidianSyncPlugin extends Plugin {
         throw new Error("tempo esgotado aguardando autorizacao do PIN");
       }
 
-      await client.validateUser(token);
+      const user = await client.validateUser(token);
       this.settings.plexAccountToken = token;
+      const locale = extractLocaleFromUser(user);
+      if (locale) {
+        this.settings.plexAccountLocale = locale;
+      }
       await this.saveSettings();
 
       new Notice("Plex Sync: login da conta Plex concluido", 5000);
@@ -194,6 +208,20 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       this.settings.serversCache = [];
     }
 
+    if (typeof this.settings.autoSyncEnabled !== "boolean") {
+      this.settings.autoSyncEnabled = false;
+    }
+    if (
+      this.settings.frontmatterKeyLanguage !== "auto_plex" &&
+      this.settings.frontmatterKeyLanguage !== "pt_br" &&
+      this.settings.frontmatterKeyLanguage !== "en_us"
+    ) {
+      this.settings.frontmatterKeyLanguage = "auto_plex";
+    }
+    if (typeof this.settings.plexAccountLocale !== "string") {
+      this.settings.plexAccountLocale = "";
+    }
+
     if (this.settings.notesFolder === "Media/Plex") {
       this.settings.notesFolder = "Media-Plex";
     }
@@ -274,6 +302,11 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   private scheduleSyncJobs(): void {
     this.clearScheduledJobs();
 
+    if (!this.settings.autoSyncEnabled) {
+      this.setStatus("Plex Sync: modo manual (Sync Now)");
+      return;
+    }
+
     if (this.settings.syncOnStartup) {
       const startupDelay = Math.max(0, Math.floor(this.settings.startupDelaySeconds));
       this.startupTimer = window.setTimeout(() => {
@@ -288,6 +321,20 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     this.intervalTimer = window.setInterval(() => {
       void this.executeSync("interval");
     }, intervalSec * 1000);
+  }
+
+  getResolvedFrontmatterLanguageLabel(): string {
+    if (this.settings.frontmatterKeyLanguage === "pt_br") {
+      return "pt-BR";
+    }
+    if (this.settings.frontmatterKeyLanguage === "en_us") {
+      return "en-US";
+    }
+    const locale = this.settings.plexAccountLocale.trim();
+    if (locale.length > 0) {
+      return locale;
+    }
+    return "en-US (fallback)";
   }
 
   private clearScheduledJobs(): void {
@@ -523,4 +570,18 @@ async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => {
     window.setTimeout(() => resolve(), ms);
   });
+}
+
+function extractLocaleFromUser(user: unknown): string | undefined {
+  if (!user || typeof user !== "object") {
+    return undefined;
+  }
+  const record = user as Record<string, unknown>;
+  const candidates = [record.locale, record.language, record.lang];
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
 }

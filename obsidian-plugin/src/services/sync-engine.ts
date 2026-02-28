@@ -1,5 +1,5 @@
 import { App } from "obsidian";
-import { TECH_FILES } from "../core/constants";
+import { MANAGED_KEYS, TECH_FILES } from "../core/constants";
 import {
   applyManagedSeriesSection,
   buildManagedMetadata,
@@ -92,7 +92,13 @@ export class SyncEngine {
     this.settingsProvider = settingsProvider;
     this.logger = logger;
     this.statusCallback = statusCallback;
-    this.store = new VaultStore(app);
+    this.store = new VaultStore(app, () => {
+      const settings = this.settingsProvider();
+      return {
+        frontmatterKeyLanguage: settings.frontmatterKeyLanguage,
+        plexAccountLocale: settings.plexAccountLocale
+      };
+    });
     this.deviceId = deviceId && deviceId.trim().length > 0 ? deviceId.trim() : buildDeviceId();
   }
 
@@ -854,6 +860,9 @@ export class SyncEngine {
           }
         }
         generatedPathByRatingKey.set(episode.ratingKey, episodeRelative);
+        const refreshedEpisodeNote = await this.store.readNote(
+          normalizeVaultPath(noteRoot, episodeRelative)
+        );
 
         const episodeRendered = await this.renderManagedHierarchyNote(
           noteRoot,
@@ -873,6 +882,7 @@ export class SyncEngine {
             duracao_minutos: episode.durationMs
               ? Math.round(episode.durationMs / 60000)
               : undefined,
+            pausa: normalizePauseSeed(refreshedEpisodeNote.frontmatter.pausa),
             assistido: episode.watched,
             sincronizado_em: nowIso(),
             sincronizado_por: "plex"
@@ -1093,6 +1103,7 @@ export class SyncEngine {
       note.frontmatter,
       managedFrontmatter as never
     );
+    this.applyNonManagedSeedFrontmatter(mergedFrontmatter, managedFrontmatter);
     const body = note.exists ? note.body : initialBody;
     const rendered = this.store.renderMarkdown(mergedFrontmatter, body);
     if (note.exists && rendered === note.content) {
@@ -1100,6 +1111,24 @@ export class SyncEngine {
     }
     await this.store.writeNote(absolutePath, rendered);
     return true;
+  }
+
+  private applyNonManagedSeedFrontmatter(
+    mergedFrontmatter: Record<string, unknown>,
+    managedFrontmatter: Record<string, unknown>
+  ): void {
+    for (const [key, value] of Object.entries(managedFrontmatter)) {
+      if (MANAGED_KEYS.includes(key as (typeof MANAGED_KEYS)[number])) {
+        continue;
+      }
+      if (key in mergedFrontmatter) {
+        continue;
+      }
+      if (value === undefined || value === null || value === "") {
+        continue;
+      }
+      mergedFrontmatter[key] = value;
+    }
   }
 
   private async cleanupGeneratedShowNotes(
@@ -1488,11 +1517,13 @@ function countWatchedEpisodes(season: PlexSeasonInfo): number {
 }
 
 function buildEpisodeFileBaseName(episode: PlexSeasonInfo["episodes"][number]): string {
+  const sanitizedTitle = sanitizeFileNameSegment(episode.title);
   if (typeof episode.episodeNumber === "number") {
-    return String(Math.floor(episode.episodeNumber)).padStart(2, "0");
+    const episodeLabel = buildEpisodeNumberLabel(episode.episodeNumber);
+    return `${episodeLabel} - ${sanitizedTitle}`;
   }
 
-  return sanitizeFileNameSegment(episode.title);
+  return sanitizedTitle;
 }
 
 function defaultSeasonBody(showTitle: string, seasonLabel: string): string {
@@ -1504,13 +1535,11 @@ function defaultEpisodeBody(
   seasonLabel: string,
   episode: PlexSeasonInfo["episodes"][number]
 ): string {
-  const code =
-    typeof episode.seasonNumber === "number" && typeof episode.episodeNumber === "number"
-      ? `S${String(episode.seasonNumber).padStart(2, "0")}E${String(
-          episode.episodeNumber
-        ).padStart(2, "0")} - `
-      : "";
-  return `# ${code}${episode.title}\n\nSérie: ${showTitle}\nTemporada: ${seasonLabel}\n\nNota sincronizada automaticamente com Plex.\n`;
+  const label =
+    typeof episode.episodeNumber === "number"
+      ? `${buildEpisodeNumberLabel(episode.episodeNumber)} - ${episode.title}`
+      : episode.title;
+  return `# ${label}\n\nSérie: ${showTitle}\nTemporada: ${seasonLabel}\n\nNota sincronizada automaticamente com Plex.\n`;
 }
 
 function applyManagedSeasonEpisodesSection(body: string, season: PlexSeasonInfo): string {
@@ -1546,21 +1575,60 @@ function renderSeasonEpisodesSection(season: PlexSeasonInfo): string {
       `- [${check}] [[${target}|${label}]] <!-- plex_episode_rating_key:${episode.ratingKey} -->`
     );
   }
+
+  lines.push("");
+  lines.push("## Sumario dos episodios", "");
+  for (const episode of episodes) {
+    const target = buildEpisodeFileBaseName(episode);
+    const label = buildEpisodeDisplayLabel(episode);
+    const summary = summarizeEpisode(episode.summary);
+    lines.push(`### ${label}`);
+    lines.push(summary);
+    lines.push(`[[${target}|Abrir nota do episodio]]`);
+    lines.push("");
+  }
+
+  if (lines[lines.length - 1] === "") {
+    lines.pop();
+  }
   lines.push("<!-- plex-season-episodes:end -->");
   return lines.join("\n");
 }
 
 function buildEpisodeDisplayLabel(episode: PlexSeasonInfo["episodes"][number]): string {
-  if (
-    typeof episode.seasonNumber === "number" &&
-    typeof episode.episodeNumber === "number"
-  ) {
-    const code = `S${String(episode.seasonNumber).padStart(2, "0")}E${String(
-      episode.episodeNumber
-    ).padStart(2, "0")}`;
-    return `${code} - ${episode.title}`;
+  if (typeof episode.episodeNumber === "number") {
+    const number = buildEpisodeNumberLabel(episode.episodeNumber);
+    return `${number} - ${episode.title}`;
   }
   return episode.title;
+}
+
+function buildEpisodeNumberLabel(episodeNumber: number): string {
+  return String(Math.floor(episodeNumber)).padStart(2, "0");
+}
+
+function summarizeEpisode(summary: unknown): string {
+  if (typeof summary !== "string") {
+    return "_Sem resumo no Plex._";
+  }
+  const compact = summary.replace(/\s+/g, " ").trim();
+  if (compact.length === 0) {
+    return "_Sem resumo no Plex._";
+  }
+  return compact;
+}
+
+function normalizePauseSeed(value: unknown): number | string {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+  return 0;
 }
 
 function parseSeasonCheckboxOverrides(body: string): Map<string, boolean> {
