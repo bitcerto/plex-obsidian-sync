@@ -146,6 +146,7 @@ export interface ManagedFrontmatter {
   capa_url?: string;
   fundo_url?: string;
   duracao_minutos?: number;
+  pausa?: string;
   temporadas?: number;
   episodios?: number;
   episodios_assistidos?: number;

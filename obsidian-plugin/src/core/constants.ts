@@ -23,6 +23,7 @@ export const MANAGED_KEYS = [
   "capa_url",
   "fundo_url",
   "duracao_minutos",
+  "pausa",
   "temporadas",
   "episodios",
   "episodios_assistidos",

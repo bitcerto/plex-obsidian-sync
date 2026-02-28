@@ -23,14 +23,22 @@ export class DiscoverSearchModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
     this.setTitle("Buscar filme/série no Plex");
+    contentEl.style.display = "flex";
+    contentEl.style.flexDirection = "column";
+    contentEl.style.gap = "12px";
+    contentEl.style.paddingBottom = "4px";
 
     const searchRow = contentEl.createDiv({ cls: "plex-sync-search-row" });
+    searchRow.style.display = "flex";
+    searchRow.style.alignItems = "center";
+    searchRow.style.gap = "8px";
+
     const inputEl = searchRow.createEl("input", { type: "text" });
     inputEl.placeholder = "Digite título (ex.: Matrix)";
-    inputEl.style.width = "70%";
-    inputEl.style.marginRight = "8px";
+    inputEl.style.flex = "1";
 
     const searchBtn = searchRow.createEl("button", { text: "Buscar" });
+    searchBtn.style.minWidth = "92px";
     const runSearch = async (): Promise<void> => {
       const value = inputEl.value.trim();
       this.query = value;
@@ -53,8 +61,17 @@ export class DiscoverSearchModal extends Modal {
 
     const helper = contentEl.createDiv({ cls: "plex-sync-search-help" });
     helper.setText("Busca na conta Plex Discover. Clique em 'Adicionar' para enviar à Lista para assistir.");
+    helper.style.fontSize = "12px";
+    helper.style.opacity = "0.85";
+    helper.style.lineHeight = "1.35";
 
     this.resultsEl = contentEl.createDiv({ cls: "plex-sync-search-results" });
+    this.resultsEl.style.maxHeight = "55vh";
+    this.resultsEl.style.overflowY = "auto";
+    this.resultsEl.style.paddingRight = "4px";
+    this.resultsEl.style.display = "flex";
+    this.resultsEl.style.flexDirection = "column";
+    this.resultsEl.style.gap = "10px";
     this.renderResults();
   }
 
@@ -94,16 +111,48 @@ export class DiscoverSearchModal extends Modal {
 
     for (const item of this.results) {
       const row = this.resultsEl.createDiv({ cls: "plex-sync-search-item" });
-      row.style.display = "flex";
-      row.style.justifyContent = "space-between";
-      row.style.alignItems = "center";
-      row.style.marginBottom = "8px";
+      row.style.display = "grid";
+      row.style.gridTemplateColumns = "1fr auto";
+      row.style.alignItems = "start";
+      row.style.gap = "10px";
+      row.style.padding = "10px 12px";
+      row.style.border = "1px solid var(--background-modifier-border)";
+      row.style.borderRadius = "8px";
+      row.style.background = "var(--background-secondary)";
+      row.style.boxShadow = "0 1px 0 rgba(0,0,0,0.12)";
+      row.style.marginBottom = "0";
 
       const meta = row.createDiv();
+      meta.style.minWidth = "0";
+
+      const titleRow = meta.createDiv();
+      titleRow.style.display = "flex";
+      titleRow.style.alignItems = "center";
+      titleRow.style.gap = "8px";
+      titleRow.style.flexWrap = "wrap";
+
       const title = `${item.title}${item.year ? ` (${item.year})` : ""}`;
-      const subtitle = `${item.type === "show" ? "Série" : "Filme"} · rk:${item.ratingKey}`;
-      meta.createEl("div", { text: title });
-      meta.createEl("small", { text: subtitle });
+      titleRow.createEl("strong", { text: title });
+
+      const badge = titleRow.createSpan({ text: item.type === "show" ? "Série" : "Filme" });
+      badge.style.fontSize = "11px";
+      badge.style.padding = "2px 6px";
+      badge.style.borderRadius = "999px";
+      badge.style.background = "var(--background-modifier-hover)";
+      badge.style.opacity = "0.9";
+
+      if (item.originalTitle && item.originalTitle !== item.title) {
+        const original = meta.createEl("div", { text: `Título original: ${item.originalTitle}` });
+        original.style.fontSize = "12px";
+        original.style.opacity = "0.85";
+        original.style.marginTop = "3px";
+      }
+
+      const subtitle = meta.createEl("small", { text: `ratingKey: ${item.ratingKey}` });
+      subtitle.style.display = "block";
+      subtitle.style.marginTop = "4px";
+      subtitle.style.opacity = "0.8";
+      subtitle.style.fontFamily = "var(--font-monospace)";
 
       const button = row.createEl("button", { text: "Adicionar" });
       const disabled = this.adding.has(item.ratingKey);
@@ -111,6 +160,7 @@ export class DiscoverSearchModal extends Modal {
       if (disabled) {
         button.setText("Adicionando...");
       }
+      button.style.minWidth = "98px";
 
       button.addEventListener("click", () => {
         void this.handleAdd(item);

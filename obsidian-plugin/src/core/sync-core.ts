@@ -97,7 +97,7 @@ export function mergeFrontmatter(
 
   for (const key of MANAGED_KEYS) {
     const value = managedRecord[key];
-    if (value !== undefined && value !== null && value !== "") {
+    if (value !== undefined && value !== null && (value !== "" || key === "pausa")) {
       merged[key] = value;
     }
   }
