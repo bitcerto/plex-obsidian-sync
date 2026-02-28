@@ -21,6 +21,7 @@ export const MANAGED_KEYS = [
   "temporadas",
   "episodios",
   "assistido",
+  // Campos legados de watchlist: mantidos como managed apenas para limpeza automatica das notas antigas.
   "na_lista_para_assistir",
   "na_watchlist",
   "ultima_visualizacao_plex",

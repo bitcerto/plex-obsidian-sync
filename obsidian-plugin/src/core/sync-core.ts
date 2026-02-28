@@ -2,6 +2,9 @@ import type { ConflictPolicy, ManagedFrontmatter, PlexMediaItem } from "../types
 import { MANAGED_KEYS, SYNC_FIELDS } from "./constants";
 import { epochSecondsToIso, nowIso } from "./utils";
 
+const SERIES_SECTION_START = "<!-- plex-series-details:start -->";
+const SERIES_SECTION_END = "<!-- plex-series-details:end -->";
+
 export function plexWatched(item: PlexMediaItem): boolean {
   if (typeof item.viewCount === "number") {
     return item.viewCount > 0;
@@ -60,7 +63,6 @@ export function buildManagedMetadata(params: {
     temporadas: item.type === "show" ? item.childCount : undefined,
     episodios: item.type === "show" ? item.leafCount : undefined,
     assistido: watched,
-    na_lista_para_assistir: item.inWatchlist,
     ultima_visualizacao_plex: epochSecondsToIso(item.lastViewedAt),
     atualizado_plex_em: epochSecondsToIso(item.updatedAt)
   };
@@ -111,4 +113,82 @@ export function mergeFrontmatter(
 
 export function defaultBody(title: string): string {
   return `# ${title}\n\nNota sincronizada automaticamente com Plex.\n\nEdite o campo \`assistido\` no frontmatter para enviar alteracoes ao Plex.\n`;
+}
+
+export function applyManagedSeriesSection(body: string, item: PlexMediaItem): string {
+  const normalized = body.replace(/\r\n/g, "\n");
+  const withoutSection = normalized
+    .replace(
+      /<!-- plex-series-details:start -->[\s\S]*?<!-- plex-series-details:end -->\n?/g,
+      ""
+    )
+    .trimEnd();
+
+  if (item.type !== "show" || !item.seasons || item.seasons.length === 0) {
+    return withoutSection.length > 0 ? `${withoutSection}\n` : "";
+  }
+
+  const section = renderSeriesSection(item);
+  const prefix = withoutSection.length > 0 ? `${withoutSection}\n\n` : "";
+  return `${prefix}${section}\n`;
+}
+
+function renderSeriesSection(item: PlexMediaItem): string {
+  const seasons = [...(item.seasons || [])].sort((a, b) => {
+    const aIndex = typeof a.seasonNumber === "number" ? a.seasonNumber : Number.MAX_SAFE_INTEGER;
+    const bIndex = typeof b.seasonNumber === "number" ? b.seasonNumber : Number.MAX_SAFE_INTEGER;
+    if (aIndex !== bIndex) {
+      return aIndex - bIndex;
+    }
+    return a.title.localeCompare(b.title, "pt-BR");
+  });
+
+  const lines: string[] = [SERIES_SECTION_START, "## Temporadas e episodios", ""];
+
+  for (const season of seasons) {
+    const seasonName =
+      typeof season.seasonNumber === "number"
+        ? `Temporada ${season.seasonNumber}`
+        : season.title || "Temporada";
+    const totalEpisodes =
+      typeof season.episodeCount === "number" ? season.episodeCount : season.episodes.length;
+    const watchedEpisodes =
+      typeof season.watchedEpisodeCount === "number"
+        ? season.watchedEpisodeCount
+        : season.episodes.filter((entry) => entry.watched).length;
+
+    lines.push(`### ${seasonName} (${watchedEpisodes}/${totalEpisodes} assistidos)`);
+
+    const episodes = [...season.episodes].sort((a, b) => {
+      const aNum = typeof a.episodeNumber === "number" ? a.episodeNumber : Number.MAX_SAFE_INTEGER;
+      const bNum = typeof b.episodeNumber === "number" ? b.episodeNumber : Number.MAX_SAFE_INTEGER;
+      if (aNum !== bNum) {
+        return aNum - bNum;
+      }
+      return a.title.localeCompare(b.title, "pt-BR");
+    });
+
+    for (const episode of episodes) {
+      const check = episode.watched ? "x" : " ";
+      const code = buildEpisodeCode(episode.seasonNumber, episode.episodeNumber);
+      const prefix = code ? `${code} - ` : "";
+      lines.push(`- [${check}] ${prefix}${episode.title}`);
+    }
+
+    lines.push("");
+  }
+
+  if (lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  lines.push(SERIES_SECTION_END);
+
+  return lines.join("\n");
+}
+
+function buildEpisodeCode(seasonNumber?: number, episodeNumber?: number): string {
+  if (typeof seasonNumber !== "number" || typeof episodeNumber !== "number") {
+    return "";
+  }
+  return `S${String(seasonNumber).padStart(2, "0")}E${String(episodeNumber).padStart(2, "0")}`;
 }

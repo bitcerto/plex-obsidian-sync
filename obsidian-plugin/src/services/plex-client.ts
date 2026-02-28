@@ -1,6 +1,8 @@
 import { requestUrl } from "obsidian";
+import { XMLParser } from "fast-xml-parser";
 import { parseItemsXml, parseSectionsXml } from "../core/plex-xml-parser";
-import type { PlexMediaItem, PlexSection } from "../types";
+import { toNumber } from "../core/utils";
+import type { PlexEpisodeInfo, PlexMediaItem, PlexSeasonInfo, PlexSection } from "../types";
 import { Logger } from "./logger";
 
 interface PmsClientOptions {
@@ -44,6 +46,62 @@ export class PmsClient {
   async markWatched(ratingKey: string, watched: boolean): Promise<void> {
     const endpoint = watched ? "/:/scrobble" : "/:/unscrobble";
     await this.requestXml("PUT", endpoint, { key: ratingKey }, true);
+  }
+
+  async getShowSeasons(showRatingKey: string): Promise<PlexSeasonInfo[]> {
+    const seasonsXml = await this.requestXml(
+      "GET",
+      `/library/metadata/${encodeURIComponent(showRatingKey)}/children`
+    );
+    const seasonNodes = parseMediaNodes(seasonsXml).filter(
+      (entry) => asString(entry.type) === "season"
+    );
+
+    const seasons = await Promise.all(
+      seasonNodes.map(async (seasonNode) => {
+        const seasonRatingKey = asString(seasonNode.ratingKey);
+        if (!seasonRatingKey) {
+          return undefined;
+        }
+
+        const episodesXml = await this.requestXml(
+          "GET",
+          `/library/metadata/${encodeURIComponent(seasonRatingKey)}/children`
+        );
+        const episodeNodes = parseMediaNodes(episodesXml).filter(
+          (entry) => asString(entry.type) === "episode"
+        );
+
+        const episodes = episodeNodes
+          .map((entry) => toEpisodeInfo(entry))
+          .filter((entry): entry is PlexEpisodeInfo => entry !== undefined);
+
+        const seasonNumber = toNumber(seasonNode.index);
+        const watchedEpisodeCount = toNumber(seasonNode.viewedLeafCount);
+        const season: PlexSeasonInfo = {
+          ratingKey: seasonRatingKey,
+          title: asString(seasonNode.title) || `Temporada ${seasonNumber || "?"}`,
+          seasonNumber,
+          episodeCount: toNumber(seasonNode.leafCount) ?? episodes.length,
+          watchedEpisodeCount:
+            watchedEpisodeCount ?? episodes.filter((entry) => entry.watched).length,
+          episodes
+        };
+
+        return season;
+      })
+    );
+
+    return seasons
+      .filter((entry): entry is PlexSeasonInfo => entry !== undefined)
+      .sort((a, b) => {
+        const aNumber = typeof a.seasonNumber === "number" ? a.seasonNumber : Number.MAX_SAFE_INTEGER;
+        const bNumber = typeof b.seasonNumber === "number" ? b.seasonNumber : Number.MAX_SAFE_INTEGER;
+        if (aNumber !== bNumber) {
+          return aNumber - bNumber;
+        }
+        return a.title.localeCompare(b.title, "pt-BR");
+      });
   }
 
   private async requestXml(
@@ -124,6 +182,70 @@ export class PmsClient {
     const qs = params.toString();
     return `${this.baseUrl}${path}${qs ? `?${qs}` : ""}`;
   }
+}
+
+const parser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "",
+  parseAttributeValue: true,
+  trimValues: true
+});
+
+function parseMediaNodes(xml: string): Record<string, unknown>[] {
+  const root = parser.parse(xml) as Record<string, unknown>;
+  const media =
+    root.MediaContainer && typeof root.MediaContainer === "object"
+      ? (root.MediaContainer as Record<string, unknown>)
+      : {};
+
+  const videos = ensureArray(media.Video);
+  const directories = ensureArray(media.Directory);
+  return [...videos, ...directories];
+}
+
+function ensureArray(value: unknown): Record<string, unknown>[] {
+  if (!value) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.filter((entry) => typeof entry === "object" && entry !== null) as Record<
+      string,
+      unknown
+    >[];
+  }
+  if (typeof value === "object") {
+    return [value as Record<string, unknown>];
+  }
+  return [];
+}
+
+function toEpisodeInfo(node: Record<string, unknown>): PlexEpisodeInfo | undefined {
+  const ratingKey = asString(node.ratingKey);
+  const title = asString(node.title);
+  if (!ratingKey || !title) {
+    return undefined;
+  }
+
+  const viewCount = toNumber(node.viewCount);
+  return {
+    ratingKey,
+    title,
+    seasonNumber: toNumber(node.parentIndex),
+    episodeNumber: toNumber(node.index),
+    watched: Boolean(viewCount && viewCount > 0),
+    durationMs: toNumber(node.duration),
+    summary: asString(node.summary)
+  };
+}
+
+function asString(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  return undefined;
 }
 
 function maskTokenInUrl(url: string): string {

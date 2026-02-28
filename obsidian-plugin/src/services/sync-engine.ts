@@ -1,6 +1,7 @@
 import { App } from "obsidian";
 import { TECH_FILES } from "../core/constants";
 import {
+  applyManagedSeriesSection,
   buildManagedMetadata,
   defaultBody,
   mergeFrontmatter,
@@ -17,11 +18,11 @@ import {
   isOnline,
   normalizeVaultPath,
   nowIso,
-  parseBool,
-  slugify
+  parseBool
 } from "../core/utils";
 import type {
   PlexMediaItem,
+  PlexSeasonInfo,
   PlexSection,
   PlexSyncSettings,
   SyncExecutionResult,
@@ -61,6 +62,7 @@ interface ResolvedPmsTarget {
 interface SyncClient {
   markWatched(ratingKey: string, watched: boolean): Promise<void>;
   setWatchlisted?: (ratingKey: string, watchlisted: boolean) => Promise<void>;
+  getShowSeasons?: (showRatingKey: string) => Promise<PlexSeasonInfo[]>;
 }
 
 export class SyncEngine {
@@ -532,6 +534,17 @@ export class SyncEngine {
       noteCreated = true;
     }
 
+    if (item.type === "show" && typeof client.getShowSeasons === "function") {
+      try {
+        item.seasons = await client.getShowSeasons(item.ratingKey);
+      } catch (error) {
+        this.logger.debug("falha ao carregar temporadas/episodios", {
+          ratingKey: item.ratingKey,
+          error: String(error)
+        });
+      }
+    }
+
     const finalWatched = plexCurrentWatched;
     item.inWatchlist = supportsWatchlist ? plexCurrentWatchlisted : undefined;
     const managedMeta = buildManagedMetadata({
@@ -543,7 +556,8 @@ export class SyncEngine {
     });
 
     const mergedFrontmatter = mergeFrontmatter(existingMeta, managedMeta);
-    const rendered = this.store.renderMarkdown(mergedFrontmatter, existingBody);
+    const managedBody = applyManagedSeriesSection(existingBody, item);
+    const rendered = this.store.renderMarkdown(mergedFrontmatter, managedBody);
 
     if (!note.exists || rendered !== note.content) {
       await this.store.writeNote(absolutePath, rendered);
@@ -579,10 +593,8 @@ export class SyncEngine {
     noteRoot: string,
     previousRelativePath?: string
   ): Promise<{ absolutePath: string; relativePath: string }> {
-    const targetFolder = mediaTypeFolder(item.type);
-    const fileName = `${slugify(item.title)}-rk${item.ratingKey}.md`;
-    const canonicalRelativePath = normalizeVaultPath(targetFolder, fileName);
-    const canonicalAbsolutePath = normalizeVaultPath(noteRoot, canonicalRelativePath);
+    const { relativePath: canonicalRelativePath, absolutePath: canonicalAbsolutePath } =
+      await this.resolveCanonicalPath(item, noteRoot);
 
     if (previousRelativePath) {
       const previousAbsolute = normalizeVaultPath(noteRoot, previousRelativePath);
@@ -630,6 +642,47 @@ export class SyncEngine {
     return {
       absolutePath: canonicalAbsolutePath,
       relativePath: canonicalRelativePath
+    };
+  }
+
+  private async resolveCanonicalPath(
+    item: PlexMediaItem,
+    noteRoot: string
+  ): Promise<{ absolutePath: string; relativePath: string }> {
+    const targetFolder = mediaTypeFolder(item.type);
+    const baseName = buildPreferredFileBaseName(item);
+
+    for (let attempt = 0; attempt < 500; attempt += 1) {
+      const fileName = buildNumberedFileName(baseName, attempt);
+      const relativePath = normalizeVaultPath(targetFolder, fileName);
+      const absolutePath = normalizeVaultPath(noteRoot, relativePath);
+      const exists = await this.store.fileExists(absolutePath);
+
+      if (!exists) {
+        return {
+          absolutePath,
+          relativePath
+        };
+      }
+
+      const existingNote = await this.store.readNote(absolutePath);
+      const existingRatingKey = existingNote.frontmatter.plex_rating_key;
+      if (
+        typeof existingRatingKey === "string" &&
+        existingRatingKey.trim() === item.ratingKey
+      ) {
+        return {
+          absolutePath,
+          relativePath
+        };
+      }
+    }
+
+    const fallbackFileName = `${baseName} - ${item.ratingKey.slice(-6)}.md`;
+    const fallbackRelativePath = normalizeVaultPath(targetFolder, fallbackFileName);
+    return {
+      absolutePath: normalizeVaultPath(noteRoot, fallbackRelativePath),
+      relativePath: fallbackRelativePath
     };
   }
 
@@ -819,6 +872,36 @@ function buildDeviceId(): string {
 
 function mediaTypeFolder(type: string): string {
   return type === "show" ? "Series" : "Filmes";
+}
+
+function buildPreferredFileBaseName(item: PlexMediaItem): string {
+  const sanitizedTitle = sanitizeFileNameSegment(item.title);
+  if (typeof item.year === "number" && Number.isFinite(item.year)) {
+    const year = Math.floor(item.year);
+    if (year >= 1800 && year <= 3000) {
+      return `${sanitizedTitle} (${year})`;
+    }
+  }
+
+  return sanitizedTitle;
+}
+
+function sanitizeFileNameSegment(value: string): string {
+  const cleaned = (value || "")
+    .replace(/[\\/:*?"<>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/g, "");
+
+  return cleaned.length > 0 ? cleaned : "Item";
+}
+
+function buildNumberedFileName(baseName: string, attempt: number): string {
+  if (attempt === 0) {
+    return `${baseName}.md`;
+  }
+
+  return `${baseName} - ${attempt + 1}.md`;
 }
 
 function mergeSyncSource(current: string, incoming: "plex" | "obsidian" | "both"): string {

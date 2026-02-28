@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyManagedSeriesSection,
   buildManagedMetadata,
   mergeFrontmatter,
   plexWatched,
@@ -69,5 +70,42 @@ describe("sync-core", () => {
     expect(meta.assistido).toBe(true);
     expect(meta.sincronizado_por).toBe("plex");
     expect(meta.sincronizado_em).toBeTruthy();
+  });
+
+  it("renderiza secoes de temporadas e episodios para series", () => {
+    const body = applyManagedSeriesSection("# Origem\n\nConteudo livre.\n", {
+      ...buildItem({ type: "show", title: "Origem" }),
+      seasons: [
+        {
+          ratingKey: "s1",
+          title: "Temporada 1",
+          seasonNumber: 1,
+          episodeCount: 2,
+          watchedEpisodeCount: 1,
+          episodes: [
+            {
+              ratingKey: "e1",
+              title: "Piloto",
+              seasonNumber: 1,
+              episodeNumber: 1,
+              watched: true
+            },
+            {
+              ratingKey: "e2",
+              title: "O Segredo",
+              seasonNumber: 1,
+              episodeNumber: 2,
+              watched: false
+            }
+          ]
+        }
+      ]
+    });
+
+    expect(body).toContain("## Temporadas e episodios");
+    expect(body).toContain("### Temporada 1 (1/2 assistidos)");
+    expect(body).toContain("- [x] S01E01 - Piloto");
+    expect(body).toContain("- [ ] S01E02 - O Segredo");
+    expect(body).toContain("Conteudo livre.");
   });
 });

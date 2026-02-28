@@ -1,5 +1,10 @@
 import { requestUrl } from "obsidian";
-import type { PlexDiscoverSearchItem, PlexMediaItem } from "../types";
+import type {
+  PlexDiscoverSearchItem,
+  PlexEpisodeInfo,
+  PlexMediaItem,
+  PlexSeasonInfo
+} from "../types";
 import { toNumber } from "../core/utils";
 import { Logger } from "./logger";
 
@@ -205,6 +210,72 @@ export class PlexDiscoverClient {
     );
   }
 
+  async getShowSeasons(showRatingKey: string): Promise<PlexSeasonInfo[]> {
+    const seasonsResponse = await this.requestJson<DiscoverMetadataResponse>(
+      "GET",
+      `${DISCOVER_BASE}/library/metadata/${encodeURIComponent(showRatingKey)}/children`,
+      { includeUserState: "1" },
+      true
+    );
+
+    const seasonNodes = ensureArrayOfRecords(seasonsResponse?.MediaContainer?.Metadata).filter(
+      (entry) => asString(entry.type) === "season"
+    );
+    if (seasonNodes.length === 0) {
+      return [];
+    }
+
+    const seasons = await Promise.all(
+      seasonNodes.map(async (seasonNode) => {
+        const seasonRatingKey = asString(seasonNode.ratingKey);
+        if (!seasonRatingKey) {
+          return undefined;
+        }
+
+        const episodesResponse = await this.requestJson<DiscoverMetadataResponse>(
+          "GET",
+          `${DISCOVER_BASE}/library/metadata/${encodeURIComponent(seasonRatingKey)}/children`,
+          { includeUserState: "1" },
+          true
+        );
+
+        const episodeNodes = ensureArrayOfRecords(episodesResponse?.MediaContainer?.Metadata).filter(
+          (entry) => asString(entry.type) === "episode"
+        );
+
+        const episodes = episodeNodes
+          .map((episodeNode) => toEpisodeInfo(episodeNode))
+          .filter((entry): entry is PlexEpisodeInfo => entry !== undefined);
+
+        const seasonNumber = toNumber(seasonNode.index);
+        const watchedEpisodeCount = toNumber(seasonNode.viewedLeafCount);
+
+        const season: PlexSeasonInfo = {
+          ratingKey: seasonRatingKey,
+          title: asString(seasonNode.title) || `Temporada ${seasonNumber || "?"}`,
+          seasonNumber,
+          episodeCount: toNumber(seasonNode.leafCount) ?? episodes.length,
+          watchedEpisodeCount:
+            watchedEpisodeCount ?? episodes.filter((entry) => entry.watched).length,
+          episodes
+        };
+
+        return season;
+      })
+    );
+
+    return seasons
+      .filter((entry): entry is PlexSeasonInfo => entry !== undefined)
+      .sort((a, b) => {
+        const aNumber = typeof a.seasonNumber === "number" ? a.seasonNumber : Number.MAX_SAFE_INTEGER;
+        const bNumber = typeof b.seasonNumber === "number" ? b.seasonNumber : Number.MAX_SAFE_INTEGER;
+        if (aNumber !== bNumber) {
+          return aNumber - bNumber;
+        }
+        return a.title.localeCompare(b.title, "pt-BR");
+      });
+  }
+
   private async getUserState(ratingKey: string): Promise<Record<string, unknown> | undefined> {
     const response = await this.requestJson<UserStateResponse>(
       "GET",
@@ -404,6 +475,27 @@ export class PlexDiscoverClient {
       "Accept-Language": "pt-BR"
     };
   }
+}
+
+function toEpisodeInfo(node: Record<string, unknown>): PlexEpisodeInfo | undefined {
+  const ratingKey = asString(node.ratingKey);
+  const title = asString(node.title);
+  if (!ratingKey || !title) {
+    return undefined;
+  }
+
+  const viewCount = toNumber(node.viewCount);
+  const watched = Boolean(viewCount && viewCount > 0);
+
+  return {
+    ratingKey,
+    title,
+    seasonNumber: toNumber(node.parentIndex),
+    episodeNumber: toNumber(node.index),
+    watched,
+    durationMs: toNumber(node.duration),
+    summary: asString(node.summary)
+  };
 }
 
 function asString(value: unknown): string | undefined {

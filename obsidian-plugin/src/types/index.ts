@@ -91,6 +91,26 @@ export interface PlexMediaItem {
   updatedAt?: number;
   libraryTitle: string;
   inWatchlist?: boolean;
+  seasons?: PlexSeasonInfo[];
+}
+
+export interface PlexSeasonInfo {
+  ratingKey: string;
+  title: string;
+  seasonNumber?: number;
+  episodeCount?: number;
+  watchedEpisodeCount?: number;
+  episodes: PlexEpisodeInfo[];
+}
+
+export interface PlexEpisodeInfo {
+  ratingKey: string;
+  title: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  watched: boolean;
+  durationMs?: number;
+  summary?: string;
 }
 
 export interface ManagedFrontmatter {
