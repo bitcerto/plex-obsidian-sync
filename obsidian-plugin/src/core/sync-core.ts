@@ -170,9 +170,8 @@ function renderSeriesSection(item: PlexMediaItem): string {
 
     for (const episode of episodes) {
       const check = episode.watched ? "x" : " ";
-      const code = buildEpisodeCode(episode.seasonNumber, episode.episodeNumber);
-      const prefix = code ? `${code} - ` : "";
-      lines.push(`- [${check}] ${prefix}${episode.title}`);
+      const label = buildEpisodeLabel(episode.episodeNumber, episode.title);
+      lines.push(`- [${check}] ${label}`);
     }
 
     lines.push("");
@@ -186,9 +185,9 @@ function renderSeriesSection(item: PlexMediaItem): string {
   return lines.join("\n");
 }
 
-function buildEpisodeCode(seasonNumber?: number, episodeNumber?: number): string {
-  if (typeof seasonNumber !== "number" || typeof episodeNumber !== "number") {
-    return "";
+function buildEpisodeLabel(episodeNumber: number | undefined, title: string): string {
+  if (typeof episodeNumber === "number") {
+    return `${String(episodeNumber).padStart(2, "0")} - ${title}`;
   }
-  return `S${String(seasonNumber).padStart(2, "0")}E${String(episodeNumber).padStart(2, "0")}`;
+  return title;
 }

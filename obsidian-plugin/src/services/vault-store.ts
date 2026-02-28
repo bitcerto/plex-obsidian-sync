@@ -8,7 +8,10 @@ import {
 import { normalizeVaultPath } from "../core/utils";
 import type { NoteData, PlexSyncSettings } from "../types";
 
-type FrontmatterAliasSettings = Pick<PlexSyncSettings, "frontmatterKeyLanguage" | "plexAccountLocale">;
+type FrontmatterAliasSettings = Pick<
+  PlexSyncSettings,
+  "frontmatterKeyLanguage" | "obsidianLocale" | "plexAccountLocale"
+>;
 
 export class VaultStore {
   private app: App;
@@ -216,11 +219,19 @@ function resolveAliasSettings(
   settingsProvider?: () => FrontmatterAliasSettings
 ): FrontmatterAliasSettings {
   if (!settingsProvider) {
-    return { frontmatterKeyLanguage: "pt_br", plexAccountLocale: "pt-BR" };
+    return {
+      frontmatterKeyLanguage: "pt_br",
+      obsidianLocale: "pt-BR",
+      plexAccountLocale: "pt-BR"
+    };
   }
   try {
     return settingsProvider();
   } catch {
-    return { frontmatterKeyLanguage: "pt_br", plexAccountLocale: "pt-BR" };
+    return {
+      frontmatterKeyLanguage: "pt_br",
+      obsidianLocale: "pt-BR",
+      plexAccountLocale: "pt-BR"
+    };
   }
 }

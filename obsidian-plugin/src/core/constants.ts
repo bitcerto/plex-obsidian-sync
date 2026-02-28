@@ -61,6 +61,7 @@ const PROPERTY_KEY_ALIASES_PT_BR: Record<string, string> = {
   capa_url: "capa url",
   fundo_url: "fundo url",
   duracao_minutos: "duracao minutos",
+  pausa: "pausa",
   temporadas: "temporadas",
   episodios: "episodios",
   episodios_assistidos: "episodios assistidos",
@@ -94,6 +95,7 @@ const PROPERTY_KEY_ALIASES_EN_US: Record<string, string> = {
   capa_url: "poster url",
   fundo_url: "background url",
   duracao_minutos: "duration minutes",
+  pausa: "pause",
   temporadas: "seasons",
   episodios: "episodes",
   episodios_assistidos: "watched episodes",
@@ -122,6 +124,7 @@ const LEGACY_PROPERTY_KEY_ALIASES_PT_BR: Record<string, string> = {
   capa_url: "capa-url",
   fundo_url: "fundo-url",
   duracao_minutos: "duracao-minutos",
+  pausa: "pausa",
   episodios_assistidos: "episodios-assistidos",
   na_lista_para_assistir: "na-lista-para-assistir",
   na_watchlist: "na-watchlist",
@@ -147,6 +150,7 @@ const LEGACY_PROPERTY_KEY_ALIASES_EN_US: Record<string, string> = {
   capa_url: "poster-url",
   fundo_url: "background-url",
   duracao_minutos: "duration-minutes",
+  pausa: "pause",
   episodios_assistidos: "watched-episodes",
   na_lista_para_assistir: "in-watchlist",
   na_watchlist: "in-watchlist-legacy",
@@ -192,20 +196,28 @@ export const PROPERTY_KEY_ALIASES_REVERSE: Record<string, string> = {
 
 export function resolveFrontmatterAliasLanguage(
   mode: PlexSyncSettings["frontmatterKeyLanguage"],
+  obsidianLocale: string,
   plexLocale: string
 ): "pt_br" | "en_us" {
   if (mode === "pt_br" || mode === "en_us") {
     return mode;
   }
-  if (typeof plexLocale === "string" && plexLocale.trim().toLowerCase().startsWith("pt")) {
+  const localeCandidate =
+    typeof obsidianLocale === "string" && obsidianLocale.trim().length > 0
+      ? obsidianLocale
+      : plexLocale;
+  if (typeof localeCandidate === "string" && localeCandidate.trim().toLowerCase().startsWith("pt")) {
     return "pt_br";
   }
   return "en_us";
 }
 
-export function getPropertyAliases(settings: Pick<PlexSyncSettings, "frontmatterKeyLanguage" | "plexAccountLocale">): Record<string, string> {
+export function getPropertyAliases(
+  settings: Pick<PlexSyncSettings, "frontmatterKeyLanguage" | "obsidianLocale" | "plexAccountLocale">
+): Record<string, string> {
   const language = resolveFrontmatterAliasLanguage(
     settings.frontmatterKeyLanguage,
+    settings.obsidianLocale,
     settings.plexAccountLocale
   );
   return PROPERTY_KEY_ALIASES_BY_LANGUAGE[language];
@@ -222,6 +234,7 @@ export const DEFAULT_SETTINGS: PlexSyncSettings = {
   authMode: "hybrid_account",
   plexAccountToken: "",
   plexAccountLocale: "",
+  obsidianLocale: "",
   plexClientIdentifier: "",
   selectedServerMachineId: "",
   connectionStrategy: "remote_first",
@@ -232,7 +245,7 @@ export const DEFAULT_SETTINGS: PlexSyncSettings = {
   libraries: [],
   notesFolder: "Media-Plex",
   conflictPolicy: "latest",
-  frontmatterKeyLanguage: "auto_plex",
+  frontmatterKeyLanguage: "auto_obsidian",
   autoSyncEnabled: false,
   syncIntervalSeconds: 60,
   syncOnStartup: true,

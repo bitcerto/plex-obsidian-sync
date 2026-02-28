@@ -257,14 +257,14 @@ export class PlexSyncSettingTab extends PluginSettingTab {
 
     const resolvedLanguage =
       this.host.getResolvedFrontmatterLanguageLabel?.() ??
-      (this.host.settings.plexAccountLocale || "en-US (fallback)");
+      (this.host.settings.obsidianLocale || "en-US (fallback)");
 
     new Setting(containerEl)
       .setName("Idioma das propriedades do frontmatter")
-      .setDesc(`Auto usa idioma da conta Plex atual (${resolvedLanguage})`)
+      .setDesc(`Auto usa idioma atual do Obsidian (${resolvedLanguage})`)
       .addDropdown((dropdown) =>
         dropdown
-          .addOption("auto_plex", "Auto (Plex)")
+          .addOption("auto_obsidian", "Auto (Obsidian)")
           .addOption("pt_br", "Portugues (pt-BR)")
           .addOption("en_us", "English (en-US)")
           .setValue(this.host.settings.frontmatterKeyLanguage)

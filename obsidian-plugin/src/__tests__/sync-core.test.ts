@@ -104,8 +104,8 @@ describe("sync-core", () => {
 
     expect(body).toContain("## Temporadas e episodios");
     expect(body).toContain("### Temporada 1 (1/2 assistidos)");
-    expect(body).toContain("- [x] S01E01 - Piloto");
-    expect(body).toContain("- [ ] S01E02 - O Segredo");
+    expect(body).toContain("- [x] 01 - Piloto");
+    expect(body).toContain("- [ ] 02 - O Segredo");
     expect(body).toContain("Conteudo livre.");
   });
 });

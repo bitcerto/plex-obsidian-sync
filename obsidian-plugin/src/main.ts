@@ -53,6 +53,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     this.settings.autoSyncEnabled = Boolean(this.settings.autoSyncEnabled);
+    this.settings.obsidianLocale = detectObsidianLocale();
     this.settings.syncIntervalSeconds = this.settings.autoSyncEnabled
       ? ensureMinNumber(this.settings.syncIntervalSeconds, 30)
       : Math.max(0, Math.floor(Number(this.settings.syncIntervalSeconds) || 0));
@@ -60,11 +61,21 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     this.settings.lockTtlSeconds = ensureMinNumber(this.settings.lockTtlSeconds, 30);
     this.settings.requestTimeoutSeconds = ensureMinNumber(this.settings.requestTimeoutSeconds, 5);
 
-    if (this.settings.frontmatterKeyLanguage !== "auto_plex" && this.settings.frontmatterKeyLanguage !== "pt_br" && this.settings.frontmatterKeyLanguage !== "en_us") {
-      this.settings.frontmatterKeyLanguage = "auto_plex";
+    if ((this.settings.frontmatterKeyLanguage as unknown as string) === "auto_plex") {
+      this.settings.frontmatterKeyLanguage = "auto_obsidian";
+    }
+    if (
+      this.settings.frontmatterKeyLanguage !== "auto_obsidian" &&
+      this.settings.frontmatterKeyLanguage !== "pt_br" &&
+      this.settings.frontmatterKeyLanguage !== "en_us"
+    ) {
+      this.settings.frontmatterKeyLanguage = "auto_obsidian";
     }
     if (typeof this.settings.plexAccountLocale !== "string") {
       this.settings.plexAccountLocale = "";
+    }
+    if (typeof this.settings.obsidianLocale !== "string") {
+      this.settings.obsidianLocale = detectObsidianLocale();
     }
 
     if (!Array.isArray(this.settings.libraries)) {
@@ -211,15 +222,21 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     if (typeof this.settings.autoSyncEnabled !== "boolean") {
       this.settings.autoSyncEnabled = false;
     }
+    if ((this.settings.frontmatterKeyLanguage as unknown as string) === "auto_plex") {
+      this.settings.frontmatterKeyLanguage = "auto_obsidian";
+    }
     if (
-      this.settings.frontmatterKeyLanguage !== "auto_plex" &&
+      this.settings.frontmatterKeyLanguage !== "auto_obsidian" &&
       this.settings.frontmatterKeyLanguage !== "pt_br" &&
       this.settings.frontmatterKeyLanguage !== "en_us"
     ) {
-      this.settings.frontmatterKeyLanguage = "auto_plex";
+      this.settings.frontmatterKeyLanguage = "auto_obsidian";
     }
     if (typeof this.settings.plexAccountLocale !== "string") {
       this.settings.plexAccountLocale = "";
+    }
+    if (typeof this.settings.obsidianLocale !== "string" || !this.settings.obsidianLocale.trim()) {
+      this.settings.obsidianLocale = detectObsidianLocale();
     }
 
     if (this.settings.notesFolder === "Media/Plex") {
@@ -330,7 +347,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     if (this.settings.frontmatterKeyLanguage === "en_us") {
       return "en-US";
     }
-    const locale = this.settings.plexAccountLocale.trim();
+    const locale = this.settings.obsidianLocale.trim();
     if (locale.length > 0) {
       return locale;
     }
@@ -584,4 +601,39 @@ function extractLocaleFromUser(user: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+function detectObsidianLocale(): string {
+  try {
+    const appLocale =
+      (window.localStorage.getItem("language") || window.localStorage.getItem("locale") || "").trim();
+    if (appLocale.length > 0) {
+      return appLocale;
+    }
+  } catch {
+    // no-op
+  }
+  try {
+    const htmlLang = (document.documentElement?.lang || "").trim();
+    if (htmlLang.length > 0) {
+      return htmlLang;
+    }
+  } catch {
+    // no-op
+  }
+  try {
+    const intlLocale = Intl.DateTimeFormat().resolvedOptions().locale.trim();
+    if (intlLocale.length > 0) {
+      return intlLocale;
+    }
+  } catch {
+    // no-op
+  }
+  if (typeof navigator !== "undefined" && typeof navigator.language === "string") {
+    const navLocale = navigator.language.trim();
+    if (navLocale.length > 0) {
+      return navLocale;
+    }
+  }
+  return "en-US";
 }

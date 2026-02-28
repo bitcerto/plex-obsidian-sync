@@ -96,6 +96,7 @@ export class SyncEngine {
       const settings = this.settingsProvider();
       return {
         frontmatterKeyLanguage: settings.frontmatterKeyLanguage,
+        obsidianLocale: settings.obsidianLocale,
         plexAccountLocale: settings.plexAccountLocale
       };
     });
@@ -1582,9 +1583,8 @@ function renderSeasonEpisodesSection(season: PlexSeasonInfo): string {
     const target = buildEpisodeFileBaseName(episode);
     const label = buildEpisodeDisplayLabel(episode);
     const summary = summarizeEpisode(episode.summary);
-    lines.push(`### ${label}`);
+    lines.push(`### [[${target}|${label}]]`);
     lines.push(summary);
-    lines.push(`[[${target}|Abrir nota do episodio]]`);
     lines.push("");
   }
 
@@ -1618,17 +1618,57 @@ function summarizeEpisode(summary: unknown): string {
   return compact;
 }
 
-function normalizePauseSeed(value: unknown): number | string {
+function normalizePauseSeed(value: unknown): string {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-    return Math.floor(value);
+    return formatAsMinuteSecond(Math.floor(value));
   }
   if (typeof value === "string") {
     const trimmed = value.trim();
-    if (trimmed.length > 0) {
-      return trimmed;
+    if (trimmed.length === 0) {
+      return "--:--";
     }
+    const normalized = normalizePauseString(trimmed);
+    if (normalized) {
+      return normalized;
+    }
+    return trimmed;
   }
-  return 0;
+  return "--:--";
+}
+
+function normalizePauseString(raw: string): string | undefined {
+  if (/^\d+$/.test(raw)) {
+    if (raw.length >= 3) {
+      const seconds = Number(raw.slice(-2));
+      const minutes = Number(raw.slice(0, -2));
+      if (Number.isFinite(seconds) && Number.isFinite(minutes) && seconds < 60) {
+        return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+      }
+    }
+    const asSeconds = Number(raw);
+    if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+      return formatAsMinuteSecond(Math.floor(asSeconds));
+    }
+    return undefined;
+  }
+
+  if (/^\d{1,2}:\d{2}$/.test(raw)) {
+    const [minutesRaw, secondsRaw] = raw.split(":");
+    const minutes = Number(minutesRaw);
+    const seconds = Number(secondsRaw);
+    if (Number.isFinite(minutes) && Number.isFinite(seconds) && seconds < 60) {
+      return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    }
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function formatAsMinuteSecond(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function parseSeasonCheckboxOverrides(body: string): Map<string, boolean> {
