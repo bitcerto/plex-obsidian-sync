@@ -79,14 +79,15 @@ export class SyncEngine {
     app: App,
     settingsProvider: () => PlexSyncSettings,
     logger: Logger,
-    statusCallback?: (text: string) => void
+    statusCallback?: (text: string) => void,
+    deviceId?: string
   ) {
     this.app = app;
     this.settingsProvider = settingsProvider;
     this.logger = logger;
     this.statusCallback = statusCallback;
     this.store = new VaultStore(app);
-    this.deviceId = buildDeviceId();
+    this.deviceId = deviceId && deviceId.trim().length > 0 ? deviceId.trim() : buildDeviceId();
   }
 
   async runSync(options: SyncOptions): Promise<SyncExecutionResult> {
@@ -130,6 +131,7 @@ export class SyncEngine {
 
       const state = await this.loadState(statePath);
       const timeoutSeconds = ensureMinNumber(settings.requestTimeoutSeconds, 5);
+      let removedByDeletedNotes = new Set<string>();
 
       let client: SyncClient;
       let items: PlexMediaItem[] = [];
@@ -150,11 +152,13 @@ export class SyncEngine {
         client = discoverClient;
         report.resolvedServer = "Conta Plex";
         report.resolvedConnectionUri = "https://discover.provider.plex.tv";
+        removedByDeletedNotes = await this.syncDeletedAccountItems(discoverClient, state, report);
         this.emitStatus("Plex Sync: carregando watchlist da conta...");
         items = await this.fetchAccountItems(
           discoverClient,
           state,
-          Array.from(this.notePathByRatingKey.keys())
+          Array.from(this.notePathByRatingKey.keys()),
+          removedByDeletedNotes
         );
       } else {
         const target = await this.resolvePmsTarget(settings);
@@ -211,6 +215,9 @@ export class SyncEngine {
 
       if (settings.authMode === "account_only") {
         for (const [ratingKey, prev] of Object.entries(state.items)) {
+          if (removedByDeletedNotes.has(ratingKey)) {
+            continue;
+          }
           if (!nextItems[ratingKey]) {
             nextItems[ratingKey] = prev;
           }
@@ -308,12 +315,19 @@ export class SyncEngine {
   private async fetchAccountItems(
     client: PlexDiscoverClient,
     state: SyncStateFile,
-    noteTrackedKeys: string[]
+    noteTrackedKeys: string[],
+    excludedKeys: Set<string>
   ): Promise<PlexMediaItem[]> {
     const watchlistItems = await client.listWatchlist();
-    const dedup = new Map<string, PlexMediaItem>(watchlistItems.map((item) => [item.ratingKey, item]));
+    const dedup = new Map<string, PlexMediaItem>(
+      watchlistItems
+        .filter((item) => !excludedKeys.has(item.ratingKey))
+        .map((item) => [item.ratingKey, item])
+    );
 
-    const trackedKeys = new Set<string>([...Object.keys(state.items), ...noteTrackedKeys]);
+    const trackedKeys = new Set<string>(
+      [...Object.keys(state.items), ...noteTrackedKeys].filter((ratingKey) => !excludedKeys.has(ratingKey))
+    );
     for (const ratingKey of trackedKeys) {
       if (dedup.has(ratingKey)) {
         continue;
@@ -333,6 +347,75 @@ export class SyncEngine {
     }
 
     return Array.from(dedup.values());
+  }
+
+  private async syncDeletedAccountItems(
+    client: PlexDiscoverClient,
+    state: SyncStateFile,
+    report: SyncReport
+  ): Promise<Set<string>> {
+    const removed = new Set<string>();
+    const candidates = this.findDeletedNoteCandidates(state);
+    if (candidates.length === 0) {
+      return removed;
+    }
+
+    // Protecao contra remocao em massa acidental por mudanca de pasta/config.
+    if (this.notePathByRatingKey.size === 0 && Object.keys(state.items).length > 0) {
+      const message =
+        "Exclusoes de notas detectadas, mas nenhuma nota Plex foi encontrada no vault atual. Remocao no Plex ignorada para evitar apagamento em massa.";
+      this.logger.warn(message);
+      report.errors.push(message);
+      return removed;
+    }
+
+    this.emitStatus(`Plex Sync: processando ${candidates.length} exclusao(oes) de nota...`);
+
+    for (const ratingKey of candidates) {
+      const failures: string[] = [];
+      let changed = false;
+
+      try {
+        await client.setWatchlisted(ratingKey, false);
+        changed = true;
+      } catch (error) {
+        failures.push(`watchlist: ${String(error)}`);
+      }
+
+      try {
+        await client.markWatched(ratingKey, false);
+        changed = true;
+      } catch (error) {
+        failures.push(`assistido: ${String(error)}`);
+      }
+
+      if (changed) {
+        removed.add(ratingKey);
+        report.updatedPlex += 1;
+      } else {
+        const message = `Falha ao propagar exclusao da nota ${ratingKey} para o Plex: ${failures.join(" | ")}`;
+        this.logger.error(message);
+        report.errors.push(message);
+      }
+    }
+
+    return removed;
+  }
+
+  private findDeletedNoteCandidates(state: SyncStateFile): string[] {
+    const deleted: string[] = [];
+
+    for (const [ratingKey, itemState] of Object.entries(state.items)) {
+      if (!itemState.notePath) {
+        continue;
+      }
+      if (this.notePathByRatingKey.has(ratingKey)) {
+        continue;
+      }
+      deleted.push(ratingKey);
+    }
+
+    return deleted;
   }
 
   private async scanNotePathsByRatingKey(noteRoot: string): Promise<Map<string, string>> {

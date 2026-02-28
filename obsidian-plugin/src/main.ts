@@ -11,6 +11,7 @@ import { ReportModal } from "./ui/report-modal";
 import { PlexSyncSettingTab } from "./ui/settings-tab";
 
 const PRODUCT_NAME = "Plex Obsidian Sync";
+const LOCAL_DEVICE_ID_KEY = "plex-obsidian-sync.local-device-id";
 
 export default class PlexObsidianSyncPlugin extends Plugin {
   settings: PlexSyncSettings = { ...DEFAULT_SETTINGS };
@@ -29,7 +30,14 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     this.statusBar = this.addStatusBarItem();
     this.setStatus("Plex Sync: loaded");
 
-    this.engine = new SyncEngine(this.app, () => this.settings, this.logger, (text) => this.setStatus(text));
+    const localDeviceId = getOrCreateLocalDeviceId();
+    this.engine = new SyncEngine(
+      this.app,
+      () => this.settings,
+      this.logger,
+      (text) => this.setStatus(text),
+      localDeviceId
+    );
 
     this.addSettingTab(new PlexSyncSettingTab(this.app, this));
     this.registerCommands();
@@ -294,14 +302,17 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     }
   }
 
-  private async executeSync(reason: string, forceFullRebuild = false): Promise<void> {
+  private async executeSync(reason: string, forceFullRebuild = false): Promise<{
+    report: SyncReport;
+    skipped: boolean;
+  } | null> {
     if (!this.engine) {
       new Notice("Plex Sync: engine nao inicializado");
-      return;
+      return null;
     }
 
     if (!this.canRunSync(reason)) {
-      return;
+      return null;
     }
 
     const result = await this.engine.runSync({
@@ -310,6 +321,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     });
 
     this.handleReport(result.report, result.skipped);
+    return result;
   }
 
   private handleReport(report: SyncReport, skipped: boolean): void {
@@ -374,7 +386,16 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       search: async (query) => client.searchCatalog(query, 20),
       addToWatchlist: async (item: PlexDiscoverSearchItem) => {
         await client.setWatchlisted(item.ratingKey, true);
-        await this.executeSync("search-add");
+        const syncResult = await this.executeSync("search-add");
+        if (
+          syncResult?.skipped &&
+          syncResult.report.skipped?.startsWith("lock mantido por")
+        ) {
+          new Notice("Adicionado no Plex. Sync local sera tentado novamente em 3s.", 5000);
+          window.setTimeout(() => {
+            void this.executeSync("search-add-retry");
+          }, 3000);
+        }
       }
     }).open();
   }
@@ -482,6 +503,20 @@ function generateClientIdentifier(): string {
   const now = Date.now().toString(36);
   const rand = Math.random().toString(36).slice(2, 14);
   return `plex-obsidian-sync-${now}-${rand}`;
+}
+
+function getOrCreateLocalDeviceId(): string {
+  try {
+    const stored = window.localStorage.getItem(LOCAL_DEVICE_ID_KEY);
+    if (stored && stored.trim().length > 0) {
+      return stored.trim();
+    }
+    const value = `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    window.localStorage.setItem(LOCAL_DEVICE_ID_KEY, value);
+    return value;
+  } catch {
+    return `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
 }
 
 async function sleep(ms: number): Promise<void> {
