@@ -51,6 +51,11 @@ interface SyncItemResult {
   conflict: boolean;
 }
 
+interface ShowHierarchySyncResult {
+  noteChanged: boolean;
+  plexUpdated: boolean;
+}
+
 interface ResolvedPmsTarget {
   baseUrl: string;
   token: string;
@@ -435,6 +440,10 @@ export class SyncEngine {
       if (typeof ratingKey !== "string" || ratingKey.trim().length === 0) {
         continue;
       }
+      const noteType = note.frontmatter.tipo;
+      if (typeof noteType === "string" && noteType !== "movie" && noteType !== "show") {
+        continue;
+      }
 
       const relativePath = filePath.slice(rootPrefix.length);
       mapping.set(ratingKey.trim(), relativePath);
@@ -647,6 +656,16 @@ export class SyncEngine {
       noteUpdated = true;
     }
 
+    if (item.type === "show") {
+      const hierarchy = await this.syncShowHierarchy(noteRoot, relativePath, item, client);
+      if (hierarchy.noteChanged) {
+        noteUpdated = true;
+      }
+      if (hierarchy.plexUpdated) {
+        plexUpdated = true;
+      }
+    }
+
     const watchedForState = parseBool(mergedFrontmatter.assistido, plexCurrentWatched);
     const watchlistedForState = parseBool(
       mergedFrontmatter.na_lista_para_assistir ?? mergedFrontmatter.na_watchlist,
@@ -669,6 +688,247 @@ export class SyncEngine {
       plexUpdated,
       conflict
     };
+  }
+
+  private async syncShowHierarchy(
+    noteRoot: string,
+    showNoteRelativePath: string,
+    showItem: PlexMediaItem,
+    client: SyncClient
+  ): Promise<ShowHierarchySyncResult> {
+    const seasons = showItem.seasons || [];
+    if (seasons.length === 0) {
+      return {
+        noteChanged: false,
+        plexUpdated: false
+      };
+    }
+
+    const showFolderRelative = getParentFolder(showNoteRelativePath);
+    if (!showFolderRelative) {
+      return {
+        noteChanged: false,
+        plexUpdated: false
+      };
+    }
+
+    let changed = false;
+    let plexUpdated = false;
+    const expectedGeneratedFiles = new Set<string>();
+
+    for (const season of seasons) {
+      const seasonFolderName = buildSeasonFolderName(season);
+      const seasonFolderRelative = normalizeVaultPath(showFolderRelative, seasonFolderName);
+      const seasonNoteRelative = normalizeVaultPath(seasonFolderRelative, `${seasonFolderName}.md`);
+      expectedGeneratedFiles.add(seasonNoteRelative);
+
+      const seasonNotePath = normalizeVaultPath(noteRoot, seasonNoteRelative);
+      const existingSeasonNote = await this.store.readNote(seasonNotePath);
+      const checkboxOverrides = parseSeasonCheckboxOverrides(existingSeasonNote.body);
+      const seasonAssistidoOverride = parseOptionalBool(existingSeasonNote.frontmatter.assistido);
+      const episodeDesiredWatched = new Map<string, boolean>();
+      const episodeRelativeByRatingKey = new Map<string, string>();
+
+      for (const episode of season.episodes) {
+        episodeDesiredWatched.set(episode.ratingKey, episode.watched);
+
+        const desiredByCheckbox = checkboxOverrides.get(episode.ratingKey);
+        if (typeof desiredByCheckbox === "boolean") {
+          episodeDesiredWatched.set(episode.ratingKey, desiredByCheckbox);
+        }
+
+        const episodeFileBase = buildEpisodeFileBaseName(episode);
+        const episodeRelative = normalizeVaultPath(seasonFolderRelative, `${episodeFileBase}.md`);
+        expectedGeneratedFiles.add(episodeRelative);
+        episodeRelativeByRatingKey.set(episode.ratingKey, episodeRelative);
+
+        const existingEpisode = await this.store.readNote(normalizeVaultPath(noteRoot, episodeRelative));
+        const desiredByEpisodeFrontmatter = parseOptionalBool(existingEpisode.frontmatter.assistido);
+        if (typeof desiredByEpisodeFrontmatter === "boolean") {
+          episodeDesiredWatched.set(episode.ratingKey, desiredByEpisodeFrontmatter);
+        }
+      }
+
+      const watchedFromPlex = countWatchedEpisodes(season);
+      const totalEpisodesInSeason =
+        typeof season.episodeCount === "number" ? season.episodeCount : season.episodes.length;
+      const seasonWatchedFromPlex =
+        totalEpisodesInSeason > 0 ? watchedFromPlex >= totalEpisodesInSeason : false;
+      if (
+        typeof seasonAssistidoOverride === "boolean" &&
+        seasonAssistidoOverride !== seasonWatchedFromPlex
+      ) {
+        for (const episode of season.episodes) {
+          episodeDesiredWatched.set(episode.ratingKey, seasonAssistidoOverride);
+        }
+      }
+
+      for (const episode of season.episodes) {
+        const desiredWatched = episodeDesiredWatched.get(episode.ratingKey);
+        if (typeof desiredWatched !== "boolean" || desiredWatched === episode.watched) {
+          continue;
+        }
+
+        try {
+          await client.markWatched(episode.ratingKey, desiredWatched);
+          episode.watched = desiredWatched;
+          plexUpdated = true;
+        } catch (error) {
+          this.logger.debug("falha ao aplicar checkbox da temporada no Plex", {
+            ratingKey: episode.ratingKey,
+            desiredWatched,
+            error: String(error)
+          });
+        }
+      }
+
+      const watchedEpisodes = countWatchedEpisodes(season);
+      const totalEpisodes =
+        typeof season.episodeCount === "number" ? season.episodeCount : season.episodes.length;
+      const seasonWatched = totalEpisodes > 0 ? watchedEpisodes >= totalEpisodes : false;
+
+      for (const episode of season.episodes) {
+        const episodeRelative = episodeRelativeByRatingKey.get(episode.ratingKey);
+        if (!episodeRelative) {
+          continue;
+        }
+
+        const episodeRendered = await this.renderManagedHierarchyNote(
+          noteRoot,
+          episodeRelative,
+          {
+            plex_rating_key: episode.ratingKey,
+            plex_parent_rating_key: season.ratingKey,
+            biblioteca: showItem.libraryTitle,
+            tipo: "episode",
+            titulo: episode.title,
+            serie_titulo: showItem.title,
+            serie_rating_key: showItem.ratingKey,
+            ano: showItem.year,
+            temporada_numero: episode.seasonNumber ?? season.seasonNumber,
+            episodio_numero: episode.episodeNumber,
+            resumo: episode.summary,
+            duracao_minutos: episode.durationMs
+              ? Math.round(episode.durationMs / 60000)
+              : undefined,
+            assistido: episode.watched,
+            sincronizado_em: nowIso(),
+            sincronizado_por: "plex"
+          },
+          defaultEpisodeBody(showItem.title, seasonFolderName, episode)
+        );
+        if (episodeRendered) {
+          changed = true;
+        }
+      }
+
+      const seasonBodySeed = existingSeasonNote.exists
+        ? existingSeasonNote.body
+        : defaultSeasonBody(showItem.title, seasonFolderName);
+      const seasonBody = applyManagedSeasonEpisodesSection(seasonBodySeed, season);
+      const seasonRendered = await this.renderManagedHierarchyNote(
+        noteRoot,
+        seasonNoteRelative,
+        {
+          plex_rating_key: season.ratingKey,
+          plex_parent_rating_key: showItem.ratingKey,
+          biblioteca: showItem.libraryTitle,
+          tipo: "season",
+          titulo: season.title,
+          serie_titulo: showItem.title,
+          serie_rating_key: showItem.ratingKey,
+          ano: showItem.year,
+          temporada_numero: season.seasonNumber,
+          resumo: season.summary,
+          nota_critica: season.rating,
+          nota_critica_fonte: season.ratingImage,
+          nota_publico: season.audienceRating,
+          nota_publico_fonte: season.audienceRatingImage,
+          capa_url: season.thumb,
+          fundo_url: season.art,
+          episodios: totalEpisodes,
+          episodios_assistidos: watchedEpisodes,
+          assistido: seasonWatched,
+          sincronizado_em: nowIso(),
+          sincronizado_por: "plex"
+        },
+        seasonBody
+      );
+      if (seasonRendered) {
+        changed = true;
+      }
+    }
+
+    const cleaned = await this.cleanupGeneratedShowNotes(
+      noteRoot,
+      showFolderRelative,
+      showItem.ratingKey,
+      expectedGeneratedFiles
+    );
+    return {
+      noteChanged: changed || cleaned,
+      plexUpdated
+    };
+  }
+
+  private async renderManagedHierarchyNote(
+    noteRoot: string,
+    relativePath: string,
+    managedFrontmatter: Record<string, unknown>,
+    initialBody: string
+  ): Promise<boolean> {
+    const absolutePath = normalizeVaultPath(noteRoot, relativePath);
+    const note = await this.store.readNote(absolutePath);
+    const mergedFrontmatter = mergeFrontmatter(
+      note.frontmatter,
+      managedFrontmatter as never
+    );
+    const body = note.exists ? note.body : initialBody;
+    const rendered = this.store.renderMarkdown(mergedFrontmatter, body);
+    if (note.exists && rendered === note.content) {
+      return false;
+    }
+    await this.store.writeNote(absolutePath, rendered);
+    return true;
+  }
+
+  private async cleanupGeneratedShowNotes(
+    noteRoot: string,
+    showFolderRelative: string,
+    showRatingKey: string,
+    expectedFiles: Set<string>
+  ): Promise<boolean> {
+    const noteRootNormalized = normalizeVaultPath(noteRoot);
+    const folderPrefix = `${normalizeVaultPath(noteRootNormalized, showFolderRelative)}/`;
+    let removedAny = false;
+
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const filePath = normalizeVaultPath(file.path);
+      if (!filePath.startsWith(folderPrefix)) {
+        continue;
+      }
+
+      const relativePath = noteRootNormalized
+        ? filePath.slice(noteRootNormalized.length + 1)
+        : filePath;
+      if (expectedFiles.has(relativePath)) {
+        continue;
+      }
+
+      const note = await this.store.readNote(filePath);
+      const type = note.frontmatter.tipo;
+      const seriesRatingKey = note.frontmatter.serie_rating_key;
+      if (
+        (type === "season" || type === "episode") &&
+        typeof seriesRatingKey === "string" &&
+        seriesRatingKey === showRatingKey
+      ) {
+        await this.store.removeAdapterFile(filePath);
+        removedAny = true;
+      }
+    }
+
+    return removedAny;
   }
 
   private async resolveNotePath(
@@ -736,8 +996,8 @@ export class SyncEngine {
     const baseName = buildPreferredFileBaseName(item);
 
     for (let attempt = 0; attempt < 500; attempt += 1) {
-      const fileName = buildNumberedFileName(baseName, attempt);
-      const relativePath = normalizeVaultPath(targetFolder, fileName);
+      const numberedBase = buildNumberedBaseName(baseName, attempt);
+      const relativePath = buildMediaRelativePath(item.type, targetFolder, numberedBase);
       const absolutePath = normalizeVaultPath(noteRoot, relativePath);
       const exists = await this.store.fileExists(absolutePath);
 
@@ -761,8 +1021,8 @@ export class SyncEngine {
       }
     }
 
-    const fallbackFileName = `${baseName} - ${item.ratingKey.slice(-6)}.md`;
-    const fallbackRelativePath = normalizeVaultPath(targetFolder, fallbackFileName);
+    const fallbackBase = `${baseName} - ${item.ratingKey.slice(-6)}`;
+    const fallbackRelativePath = buildMediaRelativePath(item.type, targetFolder, fallbackBase);
     return {
       absolutePath: normalizeVaultPath(noteRoot, fallbackRelativePath),
       relativePath: fallbackRelativePath
@@ -979,12 +1239,165 @@ function sanitizeFileNameSegment(value: string): string {
   return cleaned.length > 0 ? cleaned : "Item";
 }
 
-function buildNumberedFileName(baseName: string, attempt: number): string {
+function buildNumberedBaseName(baseName: string, attempt: number): string {
   if (attempt === 0) {
-    return `${baseName}.md`;
+    return baseName;
   }
 
-  return `${baseName} - ${attempt + 1}.md`;
+  return `${baseName} - ${attempt + 1}`;
+}
+
+function buildMediaRelativePath(type: string, rootFolder: string, baseName: string): string {
+  if (type === "show") {
+    return normalizeVaultPath(rootFolder, baseName, `${baseName}.md`);
+  }
+  return normalizeVaultPath(rootFolder, `${baseName}.md`);
+}
+
+function getParentFolder(path: string): string {
+  const normalized = normalizeVaultPath(path);
+  const idx = normalized.lastIndexOf("/");
+  if (idx <= 0) {
+    return "";
+  }
+  return normalized.slice(0, idx);
+}
+
+function buildSeasonFolderName(season: PlexSeasonInfo): string {
+  if (typeof season.seasonNumber === "number") {
+    return `Temporada ${season.seasonNumber}`;
+  }
+  return sanitizeFileNameSegment(season.title || "Temporada");
+}
+
+function countWatchedEpisodes(season: PlexSeasonInfo): number {
+  if (typeof season.watchedEpisodeCount === "number") {
+    return season.watchedEpisodeCount;
+  }
+  return season.episodes.filter((entry) => entry.watched).length;
+}
+
+function buildEpisodeFileBaseName(episode: PlexSeasonInfo["episodes"][number]): string {
+  const cleanedTitle = sanitizeFileNameSegment(episode.title);
+  if (
+    typeof episode.seasonNumber === "number" &&
+    typeof episode.episodeNumber === "number"
+  ) {
+    const code = `S${String(episode.seasonNumber).padStart(2, "0")}E${String(
+      episode.episodeNumber
+    ).padStart(2, "0")}`;
+    return `${code} - ${cleanedTitle}`;
+  }
+  return cleanedTitle;
+}
+
+function defaultSeasonBody(showTitle: string, seasonLabel: string): string {
+  return `# ${showTitle} - ${seasonLabel}\n\nNota sincronizada automaticamente com Plex.\n`;
+}
+
+function defaultEpisodeBody(
+  showTitle: string,
+  seasonLabel: string,
+  episode: PlexSeasonInfo["episodes"][number]
+): string {
+  const code =
+    typeof episode.seasonNumber === "number" && typeof episode.episodeNumber === "number"
+      ? `S${String(episode.seasonNumber).padStart(2, "0")}E${String(
+          episode.episodeNumber
+        ).padStart(2, "0")} - `
+      : "";
+  return `# ${code}${episode.title}\n\nSérie: ${showTitle}\nTemporada: ${seasonLabel}\n\nNota sincronizada automaticamente com Plex.\n`;
+}
+
+function applyManagedSeasonEpisodesSection(body: string, season: PlexSeasonInfo): string {
+  const normalized = body.replace(/\r\n/g, "\n");
+  const withoutSection = normalized
+    .replace(
+      /<!-- plex-season-episodes:start -->[\s\S]*?<!-- plex-season-episodes:end -->\n?/g,
+      ""
+    )
+    .trimEnd();
+
+  const section = renderSeasonEpisodesSection(season);
+  const prefix = withoutSection.length > 0 ? `${withoutSection}\n\n` : "";
+  return `${prefix}${section}\n`;
+}
+
+function renderSeasonEpisodesSection(season: PlexSeasonInfo): string {
+  const episodes = [...season.episodes].sort((a, b) => {
+    const aNum = typeof a.episodeNumber === "number" ? a.episodeNumber : Number.MAX_SAFE_INTEGER;
+    const bNum = typeof b.episodeNumber === "number" ? b.episodeNumber : Number.MAX_SAFE_INTEGER;
+    if (aNum !== bNum) {
+      return aNum - bNum;
+    }
+    return a.title.localeCompare(b.title, "pt-BR");
+  });
+
+  const lines: string[] = ["<!-- plex-season-episodes:start -->", "## Episodios", ""];
+  for (const episode of episodes) {
+    const check = episode.watched ? "x" : " ";
+    const target = buildEpisodeFileBaseName(episode);
+    const label = buildEpisodeDisplayLabel(episode);
+    lines.push(
+      `- [${check}] [[${target}|${label}]] <!-- plex_episode_rating_key:${episode.ratingKey} -->`
+    );
+  }
+  lines.push("<!-- plex-season-episodes:end -->");
+  return lines.join("\n");
+}
+
+function buildEpisodeDisplayLabel(episode: PlexSeasonInfo["episodes"][number]): string {
+  if (
+    typeof episode.seasonNumber === "number" &&
+    typeof episode.episodeNumber === "number"
+  ) {
+    const code = `S${String(episode.seasonNumber).padStart(2, "0")}E${String(
+      episode.episodeNumber
+    ).padStart(2, "0")}`;
+    return `${code} - ${episode.title}`;
+  }
+  return episode.title;
+}
+
+function parseSeasonCheckboxOverrides(body: string): Map<string, boolean> {
+  const overrides = new Map<string, boolean>();
+  const normalized = body.replace(/\r\n/g, "\n");
+  const sectionMatch = normalized.match(
+    /<!-- plex-season-episodes:start -->[\s\S]*?<!-- plex-season-episodes:end -->/
+  );
+  if (!sectionMatch) {
+    return overrides;
+  }
+
+  const lineRegex =
+    /^\s*-\s*\[( |x|X)\][^\n]*<!--\s*plex_episode_rating_key:\s*([^\s>]+)\s*-->\s*$/gm;
+  let match: RegExpExecArray | null;
+  while ((match = lineRegex.exec(sectionMatch[0])) !== null) {
+    const checked = match[1].toLowerCase() === "x";
+    const ratingKey = match[2];
+    overrides.set(ratingKey, checked);
+  }
+
+  return overrides;
+}
+
+function parseOptionalBool(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "y", "sim", "s"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "n", "nao"].includes(normalized)) {
+      return false;
+    }
+  }
+  return undefined;
 }
 
 function mergeSyncSource(current: string, incoming: "plex" | "obsidian" | "both"): string {

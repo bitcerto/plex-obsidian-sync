@@ -257,6 +257,13 @@ export class PlexDiscoverClient {
           episodeCount: toNumber(seasonNode.leafCount) ?? episodes.length,
           watchedEpisodeCount:
             watchedEpisodeCount ?? episodes.filter((entry) => entry.watched).length,
+          summary: asString(seasonNode.summary),
+          rating: toNumber(seasonNode.rating),
+          ratingImage: asString(seasonNode.ratingImage),
+          audienceRating: toNumber(seasonNode.audienceRating),
+          audienceRatingImage: asString(seasonNode.audienceRatingImage),
+          thumb: asString(seasonNode.thumb),
+          art: asString(seasonNode.art),
           episodes
         };
 

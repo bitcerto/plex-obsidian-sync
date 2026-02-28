@@ -100,6 +100,13 @@ export interface PlexSeasonInfo {
   seasonNumber?: number;
   episodeCount?: number;
   watchedEpisodeCount?: number;
+  summary?: string;
+  rating?: number;
+  ratingImage?: string;
+  audienceRating?: number;
+  audienceRatingImage?: string;
+  thumb?: string;
+  art?: string;
   episodes: PlexEpisodeInfo[];
 }
 
@@ -115,12 +122,17 @@ export interface PlexEpisodeInfo {
 
 export interface ManagedFrontmatter {
   plex_rating_key: string;
+  plex_parent_rating_key?: string;
   plex_guid?: string;
   biblioteca: string;
   tipo?: string;
   titulo?: string;
+  serie_titulo?: string;
+  serie_rating_key?: string;
   titulo_original?: string;
   ano?: number;
+  temporada_numero?: number;
+  episodio_numero?: number;
   resumo?: string;
   nota_critica?: number;
   nota_critica_fonte?: string;
@@ -131,6 +143,7 @@ export interface ManagedFrontmatter {
   duracao_minutos?: number;
   temporadas?: number;
   episodios?: number;
+  episodios_assistidos?: number;
   assistido: boolean;
   na_lista_para_assistir?: boolean;
   ultima_visualizacao_plex?: string;
