@@ -899,7 +899,11 @@ export class SyncEngine {
       const seasonBodySeed = refreshedSeasonNote.exists
         ? refreshedSeasonNote.body
         : defaultSeasonBody(showItem.title, seasonFolderName);
-      const seasonBody = applyManagedSeasonEpisodesSection(seasonBodySeed, season);
+      const seasonBody = applyManagedSeasonEpisodesSection(
+        seasonBodySeed,
+        season,
+        seasonFolderRelative
+      );
       const seasonRendered = await this.renderManagedHierarchyNote(
         noteRoot,
         seasonNoteRelative,
@@ -1543,7 +1547,11 @@ function defaultEpisodeBody(
   return `# ${label}\n\nSérie: ${showTitle}\nTemporada: ${seasonLabel}\n\nNota sincronizada automaticamente com Plex.\n`;
 }
 
-function applyManagedSeasonEpisodesSection(body: string, season: PlexSeasonInfo): string {
+function applyManagedSeasonEpisodesSection(
+  body: string,
+  season: PlexSeasonInfo,
+  seasonFolderRelative: string
+): string {
   const normalized = body.replace(/\r\n/g, "\n");
   const withoutSection = normalized
     .replace(
@@ -1552,12 +1560,12 @@ function applyManagedSeasonEpisodesSection(body: string, season: PlexSeasonInfo)
     )
     .trimEnd();
 
-  const section = renderSeasonEpisodesSection(season);
+  const section = renderSeasonEpisodesSection(season, seasonFolderRelative);
   const prefix = withoutSection.length > 0 ? `${withoutSection}\n\n` : "";
   return `${prefix}${section}\n`;
 }
 
-function renderSeasonEpisodesSection(season: PlexSeasonInfo): string {
+function renderSeasonEpisodesSection(season: PlexSeasonInfo, seasonFolderRelative: string): string {
   const episodes = [...season.episodes].sort((a, b) => {
     const aNum = typeof a.episodeNumber === "number" ? a.episodeNumber : Number.MAX_SAFE_INTEGER;
     const bNum = typeof b.episodeNumber === "number" ? b.episodeNumber : Number.MAX_SAFE_INTEGER;
@@ -1570,26 +1578,12 @@ function renderSeasonEpisodesSection(season: PlexSeasonInfo): string {
   const lines: string[] = ["<!-- plex-season-episodes:start -->", "## Episodios", ""];
   for (const episode of episodes) {
     const check = episode.watched ? "x" : " ";
-    const target = buildEpisodeFileBaseName(episode);
+    const targetFile = buildEpisodeFileBaseName(episode);
+    const target = normalizeVaultPath(seasonFolderRelative, targetFile);
     const label = buildEpisodeDisplayLabel(episode);
     lines.push(
       `- [${check}] [[${target}|${label}]] <!-- plex_episode_rating_key:${episode.ratingKey} -->`
     );
-  }
-
-  lines.push("");
-  lines.push("## Sumario dos episodios", "");
-  for (const episode of episodes) {
-    const target = buildEpisodeFileBaseName(episode);
-    const label = buildEpisodeDisplayLabel(episode);
-    const summary = summarizeEpisode(episode.summary);
-    lines.push(`### [[${target}|${label}]]`);
-    lines.push(summary);
-    lines.push("");
-  }
-
-  if (lines[lines.length - 1] === "") {
-    lines.pop();
   }
   lines.push("<!-- plex-season-episodes:end -->");
   return lines.join("\n");
@@ -1607,17 +1601,6 @@ function buildEpisodeNumberLabel(episodeNumber: number): string {
   return String(Math.floor(episodeNumber)).padStart(2, "0");
 }
 
-function summarizeEpisode(summary: unknown): string {
-  if (typeof summary !== "string") {
-    return "_Sem resumo no Plex._";
-  }
-  const compact = summary.replace(/\s+/g, " ").trim();
-  if (compact.length === 0) {
-    return "_Sem resumo no Plex._";
-  }
-  return compact;
-}
-
 function normalizePauseSeed(value: unknown): string {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
     return formatAsMinuteSecond(Math.floor(value));
@@ -1625,7 +1608,10 @@ function normalizePauseSeed(value: unknown): string {
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (trimmed.length === 0) {
-      return "--:--";
+      return "";
+    }
+    if (trimmed === "--:--") {
+      return "";
     }
     const normalized = normalizePauseString(trimmed);
     if (normalized) {
@@ -1633,7 +1619,7 @@ function normalizePauseSeed(value: unknown): string {
     }
     return trimmed;
   }
-  return "--:--";
+  return "";
 }
 
 function normalizePauseString(raw: string): string | undefined {

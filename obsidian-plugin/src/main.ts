@@ -605,6 +605,36 @@ function extractLocaleFromUser(user: unknown): string | undefined {
 
 function detectObsidianLocale(): string {
   try {
+    const appLocale = String((window as unknown as Record<string, unknown>)["appLocale"] || "").trim();
+    if (appLocale.length > 0) {
+      return appLocale;
+    }
+  } catch {
+    // no-op
+  }
+  try {
+    const appObject = (window as unknown as Record<string, unknown>)["app"] as
+      | Record<string, unknown>
+      | undefined;
+    const localeFromApp = String(appObject?.["locale"] || "").trim();
+    if (localeFromApp.length > 0) {
+      return localeFromApp;
+    }
+  } catch {
+    // no-op
+  }
+  try {
+    const momentObj = (window as unknown as Record<string, unknown>)["moment"] as
+      | { locale?: () => string }
+      | undefined;
+    const momentLocale = String(momentObj?.locale?.() || "").trim();
+    if (momentLocale.length > 0) {
+      return momentLocale;
+    }
+  } catch {
+    // no-op
+  }
+  try {
     const appLocale =
       (window.localStorage.getItem("language") || window.localStorage.getItem("locale") || "").trim();
     if (appLocale.length > 0) {
