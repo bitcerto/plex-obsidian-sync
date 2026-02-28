@@ -69,34 +69,40 @@ export class PlexSyncSettingTab extends PluginSettingTab {
 
   private renderAccountOnlySettings(containerEl: HTMLElement): void {
     const hasToken = this.host.settings.plexAccountToken.trim().length > 0;
-    const loginButtonText = hasToken ? "Relogar com Plex" : "Login com Plex";
+    const accountIdentity = this.host.settings.plexAccountEmail.trim();
 
     new Setting(containerEl)
       .setName("Status da conta Plex")
       .setDesc(
         hasToken
-          ? "Conta conectada (modo sem servidor: watchlist e estado assistido da conta)."
+          ? `Conta conectada (${accountIdentity || "email indisponivel"}).`
           : "Conta nao conectada. Use o login por PIN."
       );
 
-    new Setting(containerEl)
+    const actions = new Setting(containerEl)
       .setName("Acoes da conta")
-      .setDesc("Login e logout")
-      .addButton((button) =>
+      .setDesc("Login e logout");
+
+    if (!hasToken) {
+      actions.addButton((button) =>
         button
-          .setButtonText(loginButtonText)
+          .setButtonText("Login com Plex")
           .setCta()
           .onClick(async () => {
             await this.host.loginWithPlexAccount();
             this.display();
           })
-      )
-      .addButton((button) =>
+      );
+    }
+
+    if (hasToken) {
+      actions.addButton((button) =>
         button.setButtonText("Logout").onClick(async () => {
           await this.host.logoutPlexAccount();
           this.display();
         })
       );
+    }
 
     new Setting(containerEl)
       .setName("Modo conta")
@@ -107,40 +113,47 @@ export class PlexSyncSettingTab extends PluginSettingTab {
 
   private renderHybridAccountSettings(containerEl: HTMLElement): void {
     const hasToken = this.host.settings.plexAccountToken.trim().length > 0;
-    const loginButtonText = hasToken ? "Relogar com Plex" : "Login com Plex";
+    const accountIdentity = this.host.settings.plexAccountEmail.trim();
 
     new Setting(containerEl)
       .setName("Status da conta Plex")
       .setDesc(
         hasToken
-          ? "Conta conectada (token armazenado)."
+          ? `Conta conectada (${accountIdentity || "email indisponivel"}).`
           : "Conta nao conectada. Use o login por PIN."
       );
 
-    new Setting(containerEl)
+    const actions = new Setting(containerEl)
       .setName("Acoes da conta")
-      .setDesc("Login, refresh de servidores e logout")
-      .addButton((button) =>
+      .setDesc("Login, refresh de servidores e logout");
+
+    if (!hasToken) {
+      actions.addButton((button) =>
         button
-          .setButtonText(loginButtonText)
+          .setButtonText("Login com Plex")
           .setCta()
           .onClick(async () => {
             await this.host.loginWithPlexAccount();
             this.display();
           })
-      )
-      .addButton((button) =>
+      );
+    }
+
+    if (hasToken) {
+      actions.addButton((button) =>
         button.setButtonText("Atualizar servidores").onClick(async () => {
           await this.host.refreshPlexServers();
           this.display();
         })
-      )
-      .addButton((button) =>
+      );
+
+      actions.addButton((button) =>
         button.setButtonText("Logout").onClick(async () => {
           await this.host.logoutPlexAccount();
           this.display();
         })
       );
+    }
 
     const serverOptions = this.host.settings.serversCache;
     const hasServers = serverOptions.length > 0;

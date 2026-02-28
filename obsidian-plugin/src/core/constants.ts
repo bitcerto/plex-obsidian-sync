@@ -234,6 +234,7 @@ export const TECH_FILES = {
 export const DEFAULT_SETTINGS: PlexSyncSettings = {
   authMode: "hybrid_account",
   plexAccountToken: "",
+  plexAccountEmail: "",
   plexAccountLocale: "",
   obsidianLocale: "",
   plexClientIdentifier: "",

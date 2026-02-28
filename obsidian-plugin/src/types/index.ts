@@ -39,11 +39,15 @@ export interface PlexDiscoverSearchItem {
   title: string;
   year?: number;
   originalTitle?: string;
+  summary?: string;
+  thumb?: string;
+  art?: string;
 }
 
 export interface PlexSyncSettings {
   authMode: AuthMode;
   plexAccountToken: string;
+  plexAccountEmail: string;
   plexAccountLocale: string;
   obsidianLocale: string;
   plexClientIdentifier: string;

@@ -158,7 +158,31 @@ export class PlexDiscoverClient {
     for (const item of items) {
       dedup.set(item.ratingKey, item);
     }
-    return Array.from(dedup.values());
+
+    const enriched = await Promise.all(
+      Array.from(dedup.values()).map(async (item) => {
+        const hasSummary = typeof item.summary === "string" && item.summary.trim().length > 0;
+        if (hasSummary) {
+          return item;
+        }
+
+        try {
+          const metadata = await this.getMetadataDetails(item.ratingKey);
+          if (!metadata) {
+            return item;
+          }
+          return this.applySearchMetadata(item, metadata);
+        } catch (error) {
+          this.logger.debug("falha ao enriquecer item de busca", {
+            ratingKey: item.ratingKey,
+            error: String(error)
+          });
+          return item;
+        }
+      })
+    );
+
+    return enriched;
   }
 
   async getTrackedItem(ratingKey: string): Promise<PlexMediaItem | undefined> {
@@ -358,6 +382,21 @@ export class PlexDiscoverClient {
     return merged;
   }
 
+  private applySearchMetadata(
+    item: PlexDiscoverSearchItem,
+    metadata: Record<string, unknown>
+  ): PlexDiscoverSearchItem {
+    return {
+      ...item,
+      title: asString(metadata.title) ?? item.title,
+      originalTitle: asString(metadata.originalTitle) ?? item.originalTitle,
+      year: toNumber(metadata.year) ?? item.year,
+      summary: asString(metadata.summary) ?? asString(metadata.tagline) ?? item.summary,
+      thumb: asString(metadata.thumb) ?? item.thumb,
+      art: asString(metadata.art) ?? item.art
+    };
+  }
+
   private toMediaItem(
     node: Record<string, unknown>,
     libraryTitle: string
@@ -411,7 +450,10 @@ export class PlexDiscoverClient {
       type,
       title,
       year: toNumber(node.year),
-      originalTitle: asString(node.originalTitle)
+      originalTitle: asString(node.originalTitle),
+      summary: asString(node.summary),
+      thumb: asString(node.thumb),
+      art: asString(node.art)
     };
   }
 

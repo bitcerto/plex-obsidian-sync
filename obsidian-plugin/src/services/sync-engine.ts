@@ -806,7 +806,10 @@ export class SyncEngine {
 
       const seasonFolderName = buildSeasonFolderName(season);
       const seasonFolderRelative = normalizeVaultPath(showFolderRelative, seasonFolderName);
-      const seasonNoteRelative = normalizeVaultPath(seasonFolderRelative, `${seasonFolderName}.md`);
+      const seasonNoteRelative = normalizeVaultPath(
+        seasonFolderRelative,
+        `${buildSeasonNoteFileName(seasonFolderName)}.md`
+      );
       expectedGeneratedFiles.add(seasonNoteRelative);
 
       if (existingSeasonRelative) {
@@ -1512,6 +1515,13 @@ function buildSeasonFolderName(season: PlexSeasonInfo): string {
     return `Temporada ${season.seasonNumber}`;
   }
   return sanitizeFileNameSegment(season.title || "Temporada");
+}
+
+function buildSeasonNoteFileName(seasonFolderName: string): string {
+  if (seasonFolderName.startsWith("- ")) {
+    return seasonFolderName;
+  }
+  return `- ${seasonFolderName}`;
 }
 
 function countWatchedEpisodes(season: PlexSeasonInfo): number {

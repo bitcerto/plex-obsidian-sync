@@ -112,7 +112,7 @@ export class DiscoverSearchModal extends Modal {
     for (const item of this.results) {
       const row = this.resultsEl.createDiv({ cls: "plex-sync-search-item" });
       row.style.display = "grid";
-      row.style.gridTemplateColumns = "1fr auto";
+      row.style.gridTemplateColumns = "72px 1fr auto";
       row.style.alignItems = "start";
       row.style.gap = "10px";
       row.style.padding = "10px 12px";
@@ -122,49 +122,102 @@ export class DiscoverSearchModal extends Modal {
       row.style.boxShadow = "0 1px 0 rgba(0,0,0,0.12)";
       row.style.marginBottom = "0";
 
-      const meta = row.createDiv();
-      meta.style.minWidth = "0";
+      const posterWrap = row.createDiv();
+      posterWrap.style.width = "72px";
+      posterWrap.style.height = "108px";
+      posterWrap.style.borderRadius = "6px";
+      posterWrap.style.overflow = "hidden";
+      posterWrap.style.background = "var(--background-modifier-hover)";
+      posterWrap.style.display = "flex";
+      posterWrap.style.alignItems = "center";
+      posterWrap.style.justifyContent = "center";
+      posterWrap.style.border = "1px solid var(--background-modifier-border)";
+      posterWrap.style.gridRow = "1 / 3";
 
-      const titleRow = meta.createDiv();
-      titleRow.style.display = "flex";
-      titleRow.style.alignItems = "center";
-      titleRow.style.gap = "8px";
-      titleRow.style.flexWrap = "wrap";
+      if (item.thumb) {
+        const img = posterWrap.createEl("img");
+        img.src = item.thumb;
+        img.alt = `Capa de ${item.title}`;
+        img.loading = "lazy";
+        img.style.width = "100%";
+        img.style.height = "100%";
+        img.style.objectFit = "cover";
+        img.addEventListener("error", () => {
+          img.remove();
+          renderPosterFallback(posterWrap, item);
+        });
+      } else {
+        renderPosterFallback(posterWrap, item);
+      }
+
+      const headerRow = row.createDiv();
+      headerRow.style.gridColumn = "2 / 4";
+      headerRow.style.display = "grid";
+      headerRow.style.gridTemplateColumns = "1fr auto";
+      headerRow.style.alignItems = "center";
+      headerRow.style.gap = "10px";
+
+      const headerMeta = headerRow.createDiv();
+      headerMeta.style.minWidth = "0";
+      headerMeta.style.display = "flex";
+      headerMeta.style.flexDirection = "column";
+      headerMeta.style.gap = "2px";
+      headerMeta.style.overflow = "hidden";
+
+      const titleLine = headerMeta.createDiv();
+      titleLine.style.display = "flex";
+      titleLine.style.alignItems = "center";
+      titleLine.style.gap = "8px";
+      titleLine.style.whiteSpace = "nowrap";
+      titleLine.style.overflow = "hidden";
 
       const title = `${item.title}${item.year ? ` (${item.year})` : ""}`;
-      titleRow.createEl("strong", { text: title });
+      const titleEl = titleLine.createEl("strong", { text: title });
+      titleEl.style.overflow = "hidden";
+      titleEl.style.textOverflow = "ellipsis";
 
-      const badge = titleRow.createSpan({ text: item.type === "show" ? "Série" : "Filme" });
+      const badge = titleLine.createSpan({ text: item.type === "show" ? "Série" : "Filme" });
       badge.style.fontSize = "11px";
       badge.style.padding = "2px 6px";
       badge.style.borderRadius = "999px";
       badge.style.background = "var(--background-modifier-hover)";
       badge.style.opacity = "0.9";
+      badge.style.flexShrink = "0";
 
       if (item.originalTitle && item.originalTitle !== item.title) {
-        const original = meta.createEl("div", { text: `Título original: ${item.originalTitle}` });
+        const original = headerMeta.createEl("small", { text: `Título original: ${item.originalTitle}` });
         original.style.fontSize = "12px";
-        original.style.opacity = "0.85";
-        original.style.marginTop = "3px";
+        original.style.opacity = "0.82";
+        original.style.overflow = "hidden";
+        original.style.textOverflow = "ellipsis";
+        original.style.whiteSpace = "nowrap";
       }
 
-      const subtitle = meta.createEl("small", { text: `ratingKey: ${item.ratingKey}` });
-      subtitle.style.display = "block";
-      subtitle.style.marginTop = "4px";
-      subtitle.style.opacity = "0.8";
-      subtitle.style.fontFamily = "var(--font-monospace)";
-
-      const button = row.createEl("button", { text: "Adicionar" });
+      const button = headerRow.createEl("button", { text: "Adicionar" });
       const disabled = this.adding.has(item.ratingKey);
       button.disabled = disabled;
       if (disabled) {
         button.setText("Adicionando...");
       }
       button.style.minWidth = "98px";
+      button.style.flexShrink = "0";
 
       button.addEventListener("click", () => {
         void this.handleAdd(item);
       });
+
+      const synopsis = row.createEl("small", {
+        text: buildSynopsisText(item)
+      });
+      synopsis.style.gridColumn = "2 / 4";
+      synopsis.style.display = "-webkit-box";
+      synopsis.style.marginTop = "0";
+      synopsis.style.opacity = "0.85";
+      synopsis.style.lineHeight = "1.35";
+      synopsis.style.overflow = "hidden";
+      (synopsis.style as CSSStyleDeclaration & { webkitLineClamp?: string }).webkitLineClamp = "3";
+      (synopsis.style as CSSStyleDeclaration & { webkitBoxOrient?: string }).webkitBoxOrient =
+        "vertical";
     }
   }
 
@@ -186,4 +239,21 @@ export class DiscoverSearchModal extends Modal {
       this.renderResults();
     }
   }
+}
+
+function renderPosterFallback(parent: HTMLElement, item: PlexDiscoverSearchItem): void {
+  parent.empty();
+  const fallback = parent.createDiv({ text: item.type === "show" ? "SER" : "FIL" });
+  fallback.style.fontSize = "11px";
+  fallback.style.letterSpacing = "0.04em";
+  fallback.style.fontWeight = "700";
+  fallback.style.opacity = "0.75";
+}
+
+function buildSynopsisText(item: PlexDiscoverSearchItem): string {
+  const summary = (item.summary || "").replace(/\s+/g, " ").trim();
+  if (summary.length > 0) {
+    return summary;
+  }
+  return "Sem sinopse disponível neste resultado.";
 }

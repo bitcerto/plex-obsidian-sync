@@ -74,6 +74,9 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     if (typeof this.settings.plexAccountLocale !== "string") {
       this.settings.plexAccountLocale = "";
     }
+    if (typeof this.settings.plexAccountEmail !== "string") {
+      this.settings.plexAccountEmail = "";
+    }
     if (typeof this.settings.obsidianLocale !== "string") {
       this.settings.obsidianLocale = detectObsidianLocale();
     }
@@ -132,6 +135,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
       const user = await client.validateUser(token);
       this.settings.plexAccountToken = token;
+      this.settings.plexAccountEmail = extractAccountIdentity(user);
       const locale = extractLocaleFromUser(user);
       if (locale) {
         this.settings.plexAccountLocale = locale;
@@ -195,6 +199,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
   async logoutPlexAccount(): Promise<void> {
     this.settings.plexAccountToken = "";
+    this.settings.plexAccountEmail = "";
     this.settings.selectedServerMachineId = "";
     this.settings.serversCache = [];
     await this.saveSettings();
@@ -234,6 +239,9 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     }
     if (typeof this.settings.plexAccountLocale !== "string") {
       this.settings.plexAccountLocale = "";
+    }
+    if (typeof this.settings.plexAccountEmail !== "string") {
+      this.settings.plexAccountEmail = "";
     }
     if (typeof this.settings.obsidianLocale !== "string" || !this.settings.obsidianLocale.trim()) {
       this.settings.obsidianLocale = detectObsidianLocale();
@@ -601,6 +609,20 @@ function extractLocaleFromUser(user: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+function extractAccountIdentity(user: unknown): string {
+  if (!user || typeof user !== "object") {
+    return "";
+  }
+  const record = user as Record<string, unknown>;
+  const candidates = [record.email, record.username];
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return "";
 }
 
 function detectObsidianLocale(): string {
