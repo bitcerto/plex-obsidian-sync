@@ -1,0 +1,10 @@
+{
+  "id": "plex-obsidian-sync",
+  "name": "Plex Obsidian Sync",
+  "version": "0.3.2",
+  "minAppVersion": "1.5.0",
+  "description": "Bidirectional Plex sync for watched status and media notes.",
+  "author": "Lucas",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}

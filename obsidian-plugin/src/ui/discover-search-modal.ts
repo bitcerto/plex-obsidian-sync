@@ -1,0 +1,139 @@
+import { Modal, Notice } from "obsidian";
+import type { PlexDiscoverSearchItem } from "../types";
+
+interface DiscoverSearchModalOptions {
+  search: (query: string) => Promise<PlexDiscoverSearchItem[]>;
+  addToWatchlist: (item: PlexDiscoverSearchItem) => Promise<void>;
+}
+
+export class DiscoverSearchModal extends Modal {
+  private options: DiscoverSearchModalOptions;
+  private query = "";
+  private searching = false;
+  private adding = new Set<string>();
+  private results: PlexDiscoverSearchItem[] = [];
+  private resultsEl!: HTMLElement;
+
+  constructor(app: Modal["app"], options: DiscoverSearchModalOptions) {
+    super(app);
+    this.options = options;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.setTitle("Buscar filme/série no Plex");
+
+    const searchRow = contentEl.createDiv({ cls: "plex-sync-search-row" });
+    const inputEl = searchRow.createEl("input", { type: "text" });
+    inputEl.placeholder = "Digite título (ex.: Matrix)";
+    inputEl.style.width = "70%";
+    inputEl.style.marginRight = "8px";
+
+    const searchBtn = searchRow.createEl("button", { text: "Buscar" });
+    const runSearch = async (): Promise<void> => {
+      const value = inputEl.value.trim();
+      this.query = value;
+      if (value.length < 2) {
+        new Notice("Digite pelo menos 2 caracteres para buscar.");
+        return;
+      }
+      await this.search();
+    };
+
+    inputEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void runSearch();
+      }
+    });
+    searchBtn.addEventListener("click", () => {
+      void runSearch();
+    });
+
+    const helper = contentEl.createDiv({ cls: "plex-sync-search-help" });
+    helper.setText("Busca na conta Plex Discover. Clique em 'Adicionar' para enviar à Lista para assistir.");
+
+    this.resultsEl = contentEl.createDiv({ cls: "plex-sync-search-results" });
+    this.renderResults();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+
+  private async search(): Promise<void> {
+    if (this.searching) {
+      return;
+    }
+    this.searching = true;
+    this.resultsEl.empty();
+    this.resultsEl.createEl("p", { text: "Buscando..." });
+
+    try {
+      this.results = await this.options.search(this.query);
+      this.renderResults();
+    } catch (error) {
+      this.resultsEl.empty();
+      this.resultsEl.createEl("p", { text: `Erro na busca: ${String(error)}` });
+    } finally {
+      this.searching = false;
+    }
+  }
+
+  private renderResults(): void {
+    if (!this.resultsEl) {
+      return;
+    }
+
+    this.resultsEl.empty();
+    if (this.results.length === 0) {
+      this.resultsEl.createEl("p", { text: "Sem resultados." });
+      return;
+    }
+
+    for (const item of this.results) {
+      const row = this.resultsEl.createDiv({ cls: "plex-sync-search-item" });
+      row.style.display = "flex";
+      row.style.justifyContent = "space-between";
+      row.style.alignItems = "center";
+      row.style.marginBottom = "8px";
+
+      const meta = row.createDiv();
+      const title = `${item.title}${item.year ? ` (${item.year})` : ""}`;
+      const subtitle = `${item.type === "show" ? "Série" : "Filme"} · rk:${item.ratingKey}`;
+      meta.createEl("div", { text: title });
+      meta.createEl("small", { text: subtitle });
+
+      const button = row.createEl("button", { text: "Adicionar" });
+      const disabled = this.adding.has(item.ratingKey);
+      button.disabled = disabled;
+      if (disabled) {
+        button.setText("Adicionando...");
+      }
+
+      button.addEventListener("click", () => {
+        void this.handleAdd(item);
+      });
+    }
+  }
+
+  private async handleAdd(item: PlexDiscoverSearchItem): Promise<void> {
+    if (this.adding.has(item.ratingKey)) {
+      return;
+    }
+
+    this.adding.add(item.ratingKey);
+    this.renderResults();
+
+    try {
+      await this.options.addToWatchlist(item);
+      new Notice(`Adicionado: ${item.title}`);
+    } catch (error) {
+      new Notice(`Falha ao adicionar ${item.title}: ${String(error)}`, 7000);
+    } finally {
+      this.adding.delete(item.ratingKey);
+      this.renderResults();
+    }
+  }
+}

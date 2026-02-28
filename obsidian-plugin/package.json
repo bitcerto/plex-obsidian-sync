@@ -1,0 +1,25 @@
+{
+  "name": "plex-obsidian-sync-plugin",
+  "version": "0.3.2",
+  "description": "Obsidian plugin for bidirectional Plex sync",
+  "main": "main.js",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "typecheck": "tsc -noEmit -skipLibCheck",
+    "test": "vitest run"
+  },
+  "author": "Lucas",
+  "license": "MIT",
+  "dependencies": {
+    "fast-xml-parser": "^4.5.0",
+    "gray-matter": "^4.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "esbuild": "^0.25.9",
+    "obsidian": "^1.8.10",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
