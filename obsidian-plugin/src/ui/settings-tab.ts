@@ -81,7 +81,11 @@ export class PlexSyncSettingTab extends PluginSettingTab {
 
     const actions = new Setting(containerEl)
       .setName("Acoes da conta")
-      .setDesc("Login e logout");
+      .setDesc(
+        hasToken
+          ? `Conta conectada: ${accountIdentity || "email indisponivel"}`
+          : "Login e logout"
+      );
 
     if (!hasToken) {
       actions.addButton((button) =>
@@ -125,7 +129,11 @@ export class PlexSyncSettingTab extends PluginSettingTab {
 
     const actions = new Setting(containerEl)
       .setName("Acoes da conta")
-      .setDesc("Login, refresh de servidores e logout");
+      .setDesc(
+        hasToken
+          ? `Conta conectada: ${accountIdentity || "email indisponivel"}`
+          : "Login, refresh de servidores e logout"
+      );
 
     if (!hasToken) {
       actions.addButton((button) =>
