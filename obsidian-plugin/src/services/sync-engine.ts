@@ -22,6 +22,7 @@ import {
 } from "../core/utils";
 import type {
   PlexMediaItem,
+  NoteData,
   PlexSeasonInfo,
   PlexSection,
   PlexSyncSettings,
@@ -715,19 +716,20 @@ export class SyncEngine {
     let changed = false;
     let plexUpdated = false;
     const expectedGeneratedFiles = new Set<string>();
+    const generatedPathByRatingKey = await this.scanGeneratedPathsByRatingKey(
+      noteRoot,
+      showFolderRelative,
+      showItem.ratingKey
+    );
 
     for (const season of seasons) {
-      const seasonFolderName = buildSeasonFolderName(season);
-      const seasonFolderRelative = normalizeVaultPath(showFolderRelative, seasonFolderName);
-      const seasonNoteRelative = normalizeVaultPath(seasonFolderRelative, `${seasonFolderName}.md`);
-      expectedGeneratedFiles.add(seasonNoteRelative);
-
-      const seasonNotePath = normalizeVaultPath(noteRoot, seasonNoteRelative);
-      const existingSeasonNote = await this.store.readNote(seasonNotePath);
+      const existingSeasonRelative = generatedPathByRatingKey.get(season.ratingKey);
+      const existingSeasonNote = existingSeasonRelative
+        ? await this.store.readNote(normalizeVaultPath(noteRoot, existingSeasonRelative))
+        : emptyNoteData();
       const checkboxOverrides = parseSeasonCheckboxOverrides(existingSeasonNote.body);
       const seasonAssistidoOverride = parseOptionalBool(existingSeasonNote.frontmatter.assistido);
       const episodeDesiredWatched = new Map<string, boolean>();
-      const episodeRelativeByRatingKey = new Map<string, string>();
 
       for (const episode of season.episodes) {
         episodeDesiredWatched.set(episode.ratingKey, episode.watched);
@@ -737,12 +739,10 @@ export class SyncEngine {
           episodeDesiredWatched.set(episode.ratingKey, desiredByCheckbox);
         }
 
-        const episodeFileBase = buildEpisodeFileBaseName(episode);
-        const episodeRelative = normalizeVaultPath(seasonFolderRelative, `${episodeFileBase}.md`);
-        expectedGeneratedFiles.add(episodeRelative);
-        episodeRelativeByRatingKey.set(episode.ratingKey, episodeRelative);
-
-        const existingEpisode = await this.store.readNote(normalizeVaultPath(noteRoot, episodeRelative));
+        const existingEpisodeRelative = generatedPathByRatingKey.get(episode.ratingKey);
+        const existingEpisode = existingEpisodeRelative
+          ? await this.store.readNote(normalizeVaultPath(noteRoot, existingEpisodeRelative))
+          : emptyNoteData();
         const desiredByEpisodeFrontmatter = parseOptionalBool(existingEpisode.frontmatter.assistido);
         if (typeof desiredByEpisodeFrontmatter === "boolean") {
           episodeDesiredWatched.set(episode.ratingKey, desiredByEpisodeFrontmatter);
@@ -763,35 +763,97 @@ export class SyncEngine {
         }
       }
 
-      for (const episode of season.episodes) {
-        const desiredWatched = episodeDesiredWatched.get(episode.ratingKey);
-        if (typeof desiredWatched !== "boolean" || desiredWatched === episode.watched) {
-          continue;
-        }
+      const pendingEpisodeUpdates = season.episodes
+        .map((episode) => {
+          const desiredWatched = episodeDesiredWatched.get(episode.ratingKey);
+          if (typeof desiredWatched !== "boolean" || desiredWatched === episode.watched) {
+            return undefined;
+          }
+          return { episode, desiredWatched };
+        })
+        .filter(
+          (entry): entry is { episode: PlexSeasonInfo["episodes"][number]; desiredWatched: boolean } =>
+            entry !== undefined
+        );
 
-        try {
-          await client.markWatched(episode.ratingKey, desiredWatched);
-          episode.watched = desiredWatched;
-          plexUpdated = true;
-        } catch (error) {
-          this.logger.debug("falha ao aplicar checkbox da temporada no Plex", {
-            ratingKey: episode.ratingKey,
-            desiredWatched,
-            error: String(error)
-          });
-        }
-      }
+      await Promise.all(
+        pendingEpisodeUpdates.map(async ({ episode, desiredWatched }) => {
+          try {
+            await client.markWatched(episode.ratingKey, desiredWatched);
+            episode.watched = desiredWatched;
+            plexUpdated = true;
+          } catch (error) {
+            this.logger.debug("falha ao aplicar checkbox/frontmatter da temporada no Plex", {
+              ratingKey: episode.ratingKey,
+              desiredWatched,
+              error: String(error)
+            });
+          }
+        })
+      );
 
       const watchedEpisodes = countWatchedEpisodes(season);
       const totalEpisodes =
         typeof season.episodeCount === "number" ? season.episodeCount : season.episodes.length;
       const seasonWatched = totalEpisodes > 0 ? watchedEpisodes >= totalEpisodes : false;
 
-      for (const episode of season.episodes) {
-        const episodeRelative = episodeRelativeByRatingKey.get(episode.ratingKey);
-        if (!episodeRelative) {
-          continue;
+      const seasonFolderName = buildSeasonFolderName(season);
+      const seasonFolderRelative = normalizeVaultPath(showFolderRelative, seasonFolderName);
+      const seasonNoteRelative = normalizeVaultPath(seasonFolderRelative, `${seasonFolderName}.md`);
+      expectedGeneratedFiles.add(seasonNoteRelative);
+
+      if (existingSeasonRelative) {
+        const existingSeasonFolderRelative = getParentFolder(existingSeasonRelative);
+        if (
+          existingSeasonFolderRelative &&
+          existingSeasonFolderRelative !== seasonFolderRelative
+        ) {
+          const movedFolder = await this.moveGeneratedPath(
+            noteRoot,
+            existingSeasonFolderRelative,
+            seasonFolderRelative
+          );
+          if (movedFolder) {
+            changed = true;
+            this.rebaseGeneratedPathsForFolder(
+              generatedPathByRatingKey,
+              existingSeasonFolderRelative,
+              seasonFolderRelative
+            );
+          }
         }
+      }
+
+      const currentSeasonRelative = generatedPathByRatingKey.get(season.ratingKey);
+      if (currentSeasonRelative && currentSeasonRelative !== seasonNoteRelative) {
+        const movedSeasonNote = await this.moveGeneratedPath(
+          noteRoot,
+          currentSeasonRelative,
+          seasonNoteRelative
+        );
+        if (movedSeasonNote) {
+          changed = true;
+        }
+      }
+      generatedPathByRatingKey.set(season.ratingKey, seasonNoteRelative);
+
+      for (const episode of season.episodes) {
+        const episodeFileBase = buildEpisodeFileBaseName(episode);
+        const episodeRelative = normalizeVaultPath(seasonFolderRelative, `${episodeFileBase}.md`);
+        expectedGeneratedFiles.add(episodeRelative);
+
+        const existingEpisodeRelative = generatedPathByRatingKey.get(episode.ratingKey);
+        if (existingEpisodeRelative && existingEpisodeRelative !== episodeRelative) {
+          const movedEpisode = await this.moveGeneratedPath(
+            noteRoot,
+            existingEpisodeRelative,
+            episodeRelative
+          );
+          if (movedEpisode) {
+            changed = true;
+          }
+        }
+        generatedPathByRatingKey.set(episode.ratingKey, episodeRelative);
 
         const episodeRendered = await this.renderManagedHierarchyNote(
           noteRoot,
@@ -822,8 +884,9 @@ export class SyncEngine {
         }
       }
 
-      const seasonBodySeed = existingSeasonNote.exists
-        ? existingSeasonNote.body
+      const refreshedSeasonNote = await this.store.readNote(normalizeVaultPath(noteRoot, seasonNoteRelative));
+      const seasonBodySeed = refreshedSeasonNote.exists
+        ? refreshedSeasonNote.body
         : defaultSeasonBody(showItem.title, seasonFolderName);
       const seasonBody = applyManagedSeasonEpisodesSection(seasonBodySeed, season);
       const seasonRendered = await this.renderManagedHierarchyNote(
@@ -865,10 +928,157 @@ export class SyncEngine {
       showItem.ratingKey,
       expectedGeneratedFiles
     );
+    const cleanedFolders = await this.cleanupEmptyFoldersUnder(noteRoot, showFolderRelative);
     return {
-      noteChanged: changed || cleaned,
+      noteChanged: changed || cleaned || cleanedFolders,
       plexUpdated
     };
+  }
+
+  private async scanGeneratedPathsByRatingKey(
+    noteRoot: string,
+    showFolderRelative: string,
+    showRatingKey: string
+  ): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    const noteRootNormalized = normalizeVaultPath(noteRoot);
+    const folderPrefix = `${normalizeVaultPath(noteRootNormalized, showFolderRelative)}/`;
+
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const filePath = normalizeVaultPath(file.path);
+      if (!filePath.startsWith(folderPrefix)) {
+        continue;
+      }
+      const note = await this.store.readNote(filePath);
+      const type = note.frontmatter.tipo;
+      const ratingKey = note.frontmatter.plex_rating_key;
+      const seriesRatingKey = note.frontmatter.serie_rating_key;
+      if (
+        (type === "season" || type === "episode") &&
+        typeof ratingKey === "string" &&
+        typeof seriesRatingKey === "string" &&
+        seriesRatingKey === showRatingKey
+      ) {
+        const relativePath = noteRootNormalized
+          ? filePath.slice(noteRootNormalized.length + 1)
+          : filePath;
+        result.set(ratingKey, relativePath);
+      }
+    }
+
+    return result;
+  }
+
+  private async moveGeneratedPath(
+    noteRoot: string,
+    fromRelativePath: string,
+    toRelativePath: string
+  ): Promise<boolean> {
+    if (fromRelativePath === toRelativePath) {
+      return false;
+    }
+
+    const fromAbsolute = normalizeVaultPath(noteRoot, fromRelativePath);
+    const toAbsolute = normalizeVaultPath(noteRoot, toRelativePath);
+    const fromExists = await this.store.fileExists(fromAbsolute);
+    if (!fromExists) {
+      return false;
+    }
+    const toExists = await this.store.fileExists(toAbsolute);
+    if (toExists) {
+      return false;
+    }
+
+    await this.store.moveAdapterFile(fromAbsolute, toAbsolute);
+    return true;
+  }
+
+  private rebaseGeneratedPathsForFolder(
+    mapping: Map<string, string>,
+    oldFolderRelative: string,
+    newFolderRelative: string
+  ): void {
+    const oldPrefix = `${normalizeVaultPath(oldFolderRelative)}/`;
+    const newPrefix = `${normalizeVaultPath(newFolderRelative)}/`;
+
+    for (const [ratingKey, relativePath] of mapping.entries()) {
+      const normalized = normalizeVaultPath(relativePath);
+      if (normalized === normalizeVaultPath(oldFolderRelative)) {
+        mapping.set(ratingKey, normalizeVaultPath(newFolderRelative));
+        continue;
+      }
+      if (normalized.startsWith(oldPrefix)) {
+        mapping.set(ratingKey, normalizeVaultPath(newPrefix, normalized.slice(oldPrefix.length)));
+      }
+    }
+  }
+
+  private async cleanupEmptyFoldersUnder(noteRoot: string, rootRelative: string): Promise<boolean> {
+    const rootAbsolute = normalizeVaultPath(noteRoot, rootRelative);
+    const rootExists = await this.store.fileExists(rootAbsolute);
+    if (!rootExists) {
+      return false;
+    }
+
+    const listing = await this.safeList(rootAbsolute);
+    if (!listing) {
+      return false;
+    }
+
+    let removedAny = false;
+    for (const subfolder of listing.folders) {
+      const removed = await this.removeEmptyFoldersRecursive(normalizeVaultPath(subfolder));
+      if (removed) {
+        removedAny = true;
+      }
+    }
+
+    return removedAny;
+  }
+
+  private async removeEmptyFoldersRecursive(folderAbsolutePath: string): Promise<boolean> {
+    const listing = await this.safeList(folderAbsolutePath);
+    if (!listing) {
+      return false;
+    }
+
+    let removedAny = false;
+    for (const subfolder of listing.folders) {
+      const removed = await this.removeEmptyFoldersRecursive(normalizeVaultPath(subfolder));
+      if (removed) {
+        removedAny = true;
+      }
+    }
+
+    const refreshed = await this.safeList(folderAbsolutePath);
+    if (!refreshed) {
+      return removedAny;
+    }
+
+    if (refreshed.files.length === 0 && refreshed.folders.length === 0) {
+      try {
+        await this.app.vault.adapter.rmdir(folderAbsolutePath, false);
+        return true;
+      } catch {
+        return removedAny;
+      }
+    }
+
+    return removedAny;
+  }
+
+  private async safeList(
+    path: string
+  ): Promise<{ files: string[]; folders: string[] } | undefined> {
+    try {
+      const listing = await this.app.vault.adapter.list(path);
+      return {
+        files: listing.files,
+        folders: listing.folders
+      };
+    } catch {
+      return undefined;
+    }
   }
 
   private async renderManagedHierarchyNote(
@@ -1278,17 +1488,11 @@ function countWatchedEpisodes(season: PlexSeasonInfo): number {
 }
 
 function buildEpisodeFileBaseName(episode: PlexSeasonInfo["episodes"][number]): string {
-  const cleanedTitle = sanitizeFileNameSegment(episode.title);
-  if (
-    typeof episode.seasonNumber === "number" &&
-    typeof episode.episodeNumber === "number"
-  ) {
-    const code = `S${String(episode.seasonNumber).padStart(2, "0")}E${String(
-      episode.episodeNumber
-    ).padStart(2, "0")}`;
-    return `${code} - ${cleanedTitle}`;
+  if (typeof episode.episodeNumber === "number") {
+    return String(Math.floor(episode.episodeNumber)).padStart(2, "0");
   }
-  return cleanedTitle;
+
+  return sanitizeFileNameSegment(episode.title);
 }
 
 function defaultSeasonBody(showTitle: string, seasonLabel: string): string {
@@ -1398,6 +1602,17 @@ function parseOptionalBool(value: unknown): boolean | undefined {
     }
   }
   return undefined;
+}
+
+function emptyNoteData(): NoteData {
+  return {
+    exists: false,
+    path: "",
+    content: "",
+    body: "",
+    frontmatter: {},
+    mtimeMs: 0
+  };
 }
 
 function mergeSyncSource(current: string, incoming: "plex" | "obsidian" | "both"): string {

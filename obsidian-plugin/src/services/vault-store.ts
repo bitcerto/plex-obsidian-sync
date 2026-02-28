@@ -1,6 +1,10 @@
 import { App, TFile } from "obsidian";
 import matter from "gray-matter";
-import { MANAGED_KEYS } from "../core/constants";
+import {
+  MANAGED_KEYS,
+  PROPERTY_KEY_ALIASES,
+  PROPERTY_KEY_ALIASES_REVERSE
+} from "../core/constants";
 import { normalizeVaultPath } from "../core/utils";
 import type { NoteData } from "../types";
 
@@ -46,7 +50,7 @@ export class VaultStore {
 
     const content = await this.app.vault.read(file);
     const parsed = matter(content);
-    const data = isRecord(parsed.data) ? parsed.data : {};
+    const data = isRecord(parsed.data) ? normalizeFrontmatterKeys(parsed.data) : {};
 
     return {
       exists: true,
@@ -60,8 +64,9 @@ export class VaultStore {
 
   renderMarkdown(frontmatter: Record<string, unknown>, body: string): string {
     const ordered = orderFrontmatter(frontmatter);
+    const externalKeys = denormalizeFrontmatterKeys(ordered);
     const normalizedBody = body.replace(/^\n+/, "");
-    const rendered = matter.stringify(normalizedBody, ordered);
+    const rendered = matter.stringify(normalizedBody, externalKeys);
 
     return rendered.endsWith("\n") ? rendered : `${rendered}\n`;
   }
@@ -167,4 +172,31 @@ function orderFrontmatter(frontmatter: Record<string, unknown>): Record<string, 
   }
 
   return ordered;
+}
+
+function normalizeFrontmatterKeys(frontmatter: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = { ...frontmatter };
+
+  for (const [external, canonical] of Object.entries(PROPERTY_KEY_ALIASES_REVERSE)) {
+    if (!(external in normalized)) {
+      continue;
+    }
+    if (!(canonical in normalized)) {
+      normalized[canonical] = normalized[external];
+    }
+    delete normalized[external];
+  }
+
+  return normalized;
+}
+
+function denormalizeFrontmatterKeys(frontmatter: Record<string, unknown>): Record<string, unknown> {
+  const denormalized: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(frontmatter)) {
+    const external = PROPERTY_KEY_ALIASES[key] ?? key;
+    denormalized[external] = value;
+  }
+
+  return denormalized;
 }
