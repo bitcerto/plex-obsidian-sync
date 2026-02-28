@@ -186,10 +186,15 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       this.settings.serversCache = [];
     }
 
+    if (this.settings.notesFolder === "Media/Plex") {
+      this.settings.notesFolder = "Media-Plex";
+    }
+
     if (!this.settings.plexClientIdentifier) {
       this.settings.plexClientIdentifier = generateClientIdentifier();
-      await this.saveData(this.settings);
     }
+
+    await this.saveData(this.settings);
   }
 
   private registerCommands(): void {

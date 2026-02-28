@@ -149,3 +149,4 @@ Novo modo de autenticacao:
 - `Conta Plex (sem servidor)` para sincronizar watchlist da conta e campo `assistido` sem depender de PMS local
 - Mantem os modos anteriores (`Conta Plex + Descoberta` e `Manual`)
 - Inclui comando para buscar filmes/séries na conta Plex e adicionar direto na Lista para assistir
+- Estrutura de notas por tipo: `Media-Plex/Filmes/...` e `Media-Plex/Series/...`

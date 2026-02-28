@@ -1,6 +1,6 @@
 {
   "name": "plex-obsidian-sync-plugin",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Obsidian plugin for bidirectional Plex sync",
   "main": "main.js",
   "scripts": {

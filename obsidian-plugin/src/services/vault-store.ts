@@ -129,6 +129,13 @@ export class VaultStore {
     }
     await this.app.vault.adapter.remove(normalized);
   }
+
+  async moveAdapterFile(fromPath: string, toPath: string): Promise<void> {
+    const from = normalizeVaultPath(fromPath);
+    const to = normalizeVaultPath(toPath);
+    await this.ensureFolder(getParentFolder(to));
+    await this.app.vault.adapter.rename(from, to);
+  }
 }
 
 function getParentFolder(path: string): string {

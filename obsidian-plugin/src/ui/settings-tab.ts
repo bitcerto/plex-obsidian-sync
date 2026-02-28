@@ -233,7 +233,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
       .setDesc("Pasta no vault para notas e arquivos tecnicos")
       .addText((text) =>
         text.setValue(this.host.settings.notesFolder).onChange(async (value) => {
-          this.host.settings.notesFolder = value.trim() || "Media/Plex";
+          this.host.settings.notesFolder = value.trim() || "Media-Plex";
           await this.host.saveSettings();
         })
       );

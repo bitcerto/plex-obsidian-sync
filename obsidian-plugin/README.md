@@ -53,7 +53,12 @@ No Android, a mesma pasta de plugin deve estar presente no vault sincronizado pe
 - Modo manual (fallback):
   - `Plex Base URL`
   - `Plex Token`
-- `Pasta das notas` (default: `Media/Plex`)
+- `Pasta das notas` (default: `Media-Plex`)
+
+Estrutura de notas gerada:
+
+- `Media-Plex/Filmes/...`
+- `Media-Plex/Series/...`
 
 No modo `Conta Plex (sem servidor)`, o plugin sincroniza watchlist da conta e campo `assistido` via endpoints `discover.provider.plex.tv` / `metadata.provider.plex.tv`.
 

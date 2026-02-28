@@ -579,10 +579,25 @@ export class SyncEngine {
     noteRoot: string,
     previousRelativePath?: string
   ): Promise<{ absolutePath: string; relativePath: string }> {
+    const targetFolder = mediaTypeFolder(item.type);
+    const fileName = `${slugify(item.title)}-rk${item.ratingKey}.md`;
+    const canonicalRelativePath = normalizeVaultPath(targetFolder, fileName);
+    const canonicalAbsolutePath = normalizeVaultPath(noteRoot, canonicalRelativePath);
+
     if (previousRelativePath) {
       const previousAbsolute = normalizeVaultPath(noteRoot, previousRelativePath);
       const exists = await this.store.fileExists(previousAbsolute);
       if (exists) {
+        if (previousRelativePath !== canonicalRelativePath) {
+          const canonicalExists = await this.store.fileExists(canonicalAbsolutePath);
+          if (!canonicalExists) {
+            await this.store.moveAdapterFile(previousAbsolute, canonicalAbsolutePath);
+            return {
+              absolutePath: canonicalAbsolutePath,
+              relativePath: canonicalRelativePath
+            };
+          }
+        }
         return {
           absolutePath: previousAbsolute,
           relativePath: previousRelativePath
@@ -595,6 +610,16 @@ export class SyncEngine {
       const mappedAbsolute = normalizeVaultPath(noteRoot, mappedRelativePath);
       const exists = await this.store.fileExists(mappedAbsolute);
       if (exists) {
+        if (mappedRelativePath !== canonicalRelativePath) {
+          const canonicalExists = await this.store.fileExists(canonicalAbsolutePath);
+          if (!canonicalExists) {
+            await this.store.moveAdapterFile(mappedAbsolute, canonicalAbsolutePath);
+            return {
+              absolutePath: canonicalAbsolutePath,
+              relativePath: canonicalRelativePath
+            };
+          }
+        }
         return {
           absolutePath: mappedAbsolute,
           relativePath: mappedRelativePath
@@ -602,12 +627,9 @@ export class SyncEngine {
       }
     }
 
-    const librarySlug = slugify(item.libraryTitle);
-    const fileName = `${slugify(item.title)}-rk${item.ratingKey}.md`;
-    const relativePath = normalizeVaultPath(librarySlug, fileName);
     return {
-      absolutePath: normalizeVaultPath(noteRoot, relativePath),
-      relativePath
+      absolutePath: canonicalAbsolutePath,
+      relativePath: canonicalRelativePath
     };
   }
 
@@ -793,6 +815,10 @@ function buildDeviceId(): string {
   const now = Date.now().toString(36);
   const rand = Math.random().toString(36).slice(2, 10);
   return `device-${now}-${rand}`;
+}
+
+function mediaTypeFolder(type: string): string {
+  return type === "show" ? "Series" : "Filmes";
 }
 
 function mergeSyncSource(current: string, incoming: "plex" | "obsidian" | "both"): string {

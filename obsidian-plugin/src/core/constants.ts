@@ -49,7 +49,7 @@ export const DEFAULT_SETTINGS: PlexSyncSettings = {
   plexBaseUrl: "",
   plexToken: "",
   libraries: [],
-  notesFolder: "Media/Plex",
+  notesFolder: "Media-Plex",
   conflictPolicy: "latest",
   syncIntervalSeconds: 60,
   syncOnStartup: true,
