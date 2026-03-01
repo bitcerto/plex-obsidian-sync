@@ -50,6 +50,12 @@ interface PlexHttpResponse {
 
 const DISCOVER_BASE = "https://discover.provider.plex.tv";
 const METADATA_BASE = "https://metadata.provider.plex.tv";
+const ACCOUNT_PAGE_SIZE = 100;
+const WATCHED_HISTORY_ENDPOINTS = [
+  `${DISCOVER_BASE}/library/sections/history/all`,
+  `${DISCOVER_BASE}/library/history/all`,
+  `${DISCOVER_BASE}/library/sections/history`
+] as const;
 
 export class PlexDiscoverClient {
   private accountToken: string;
@@ -73,59 +79,54 @@ export class PlexDiscoverClient {
   }
 
   async listWatchlist(): Promise<PlexMediaItem[]> {
-    const rawItems: Record<string, unknown>[] = [];
-    const pageSize = 100;
-    let start = 0;
-    let totalSize = Number.POSITIVE_INFINITY;
-
-    while (start < totalSize) {
-      const response = await this.requestJson<DiscoverListResponse>(
-        "GET",
-        `${DISCOVER_BASE}/library/sections/watchlist/all`,
-        {
-          type: "99",
-          sort: "watchlistedAt:desc",
-          includeUserState: "1",
-          includeCollections: "1",
-          includeExternalMedia: "1",
-          "X-Plex-Container-Start": String(start),
-          "X-Plex-Container-Size": String(pageSize)
-        }
-      );
-
-      if (!response) {
-        break;
-      }
-
-      const media = response.MediaContainer;
-      const pageItems = ensureArrayOfRecords(media?.Metadata);
-      rawItems.push(...pageItems);
-
-      const reportedTotal = toNumber(media?.totalSize);
-      const reportedSize = toNumber(media?.size) ?? pageItems.length;
-      totalSize = reportedTotal ?? start + reportedSize;
-
-      if (reportedSize <= 0) {
-        break;
-      }
-
-      start += reportedSize;
-    }
-
-    const baseItems = rawItems
-      .map((node) => this.toMediaItem(node, "Watchlist"))
-      .filter((entry): entry is PlexMediaItem => entry !== undefined);
-
-    const enriched = await Promise.all(
-      baseItems.map(async (item) => {
-        const metadata = await this.getMetadataDetails(item.ratingKey);
-        const state = await this.getUserState(item.ratingKey);
-        const withMetadata = this.applyMetadata(item, metadata);
-        return this.applyUserState(withMetadata, state);
-      })
+    const listed = await this.listSectionItems(
+      `${DISCOVER_BASE}/library/sections/watchlist/all`,
+      {
+        type: "99",
+        sort: "watchlistedAt:desc",
+        includeUserState: "1",
+        includeCollections: "1",
+        includeExternalMedia: "1"
+      },
+      "Watchlist"
     );
 
-    return enriched;
+    return this.enrichMediaItems(listed.items);
+  }
+
+  async listWatchedHistory(): Promise<PlexMediaItem[]> {
+    for (const endpoint of WATCHED_HISTORY_ENDPOINTS) {
+      try {
+        const listed = await this.listSectionItems(
+          endpoint,
+          {
+            type: "99",
+            sort: "viewedAt:desc",
+            includeUserState: "1",
+            includeCollections: "1",
+            includeExternalMedia: "1"
+          },
+          "Assistidos",
+          true
+        );
+
+        if (!listed.supported) {
+          continue;
+        }
+
+        return this.enrichMediaItems(listed.items);
+      } catch (error) {
+        this.logger.debug("falha ao carregar historico assistido da conta", {
+          endpoint,
+          error: String(error)
+        });
+      }
+    }
+
+    this.logger.warn(
+      "Nao foi possivel carregar historico assistido da conta via Discover. Seguindo somente com watchlist."
+    );
+    return [];
   }
 
   async searchCatalog(query: string, limit = 20): Promise<PlexDiscoverSearchItem[]> {
@@ -208,10 +209,7 @@ export class PlexDiscoverClient {
       return undefined;
     }
 
-    const metadata = await this.getMetadataDetails(item.ratingKey);
-    const state = await this.getUserState(item.ratingKey);
-    const withMetadata = this.applyMetadata(item, metadata);
-    return this.applyUserState(withMetadata, state);
+    return this.enrichMediaItem(item);
   }
 
   async markWatched(ratingKey: string, watched: boolean): Promise<void> {
@@ -328,6 +326,72 @@ export class PlexDiscoverClient {
     return raw[0];
   }
 
+  private async listSectionItems(
+    endpoint: string,
+    query: Record<string, string>,
+    libraryTitle: string,
+    allow404 = false
+  ): Promise<{ supported: boolean; items: PlexMediaItem[] }> {
+    const rawItems: Record<string, unknown>[] = [];
+    let start = 0;
+
+    while (true) {
+      const response = await this.requestJson<DiscoverListResponse>(
+        "GET",
+        endpoint,
+        {
+          ...query,
+          "X-Plex-Container-Start": String(start),
+          "X-Plex-Container-Size": String(ACCOUNT_PAGE_SIZE)
+        },
+        allow404
+      );
+
+      if (!response) {
+        if (start === 0 && allow404) {
+          return { supported: false, items: [] };
+        }
+        break;
+      }
+
+      const media = response.MediaContainer;
+      const pageItems = ensureArrayOfRecords(media?.Metadata);
+      rawItems.push(...pageItems);
+
+      const reportedSize = toNumber(media?.size) ?? pageItems.length;
+      if (reportedSize <= 0) {
+        break;
+      }
+
+      start += reportedSize;
+
+      const reportedTotal = toNumber(media?.totalSize);
+      if (typeof reportedTotal === "number" && start >= reportedTotal) {
+        break;
+      }
+      if (typeof reportedTotal !== "number" && reportedSize < ACCOUNT_PAGE_SIZE) {
+        break;
+      }
+    }
+
+    const items = rawItems
+      .map((node) => this.toMediaItem(node, libraryTitle))
+      .filter((entry): entry is PlexMediaItem => entry !== undefined);
+
+    return { supported: true, items };
+  }
+
+  private async enrichMediaItems(items: PlexMediaItem[]): Promise<PlexMediaItem[]> {
+    return Promise.all(items.map((item) => this.enrichMediaItem(item)));
+  }
+
+  private async enrichMediaItem(item: PlexMediaItem): Promise<PlexMediaItem> {
+    const metadata = await this.getMetadataDetails(item.ratingKey);
+    const state = await this.getUserState(item.ratingKey);
+    const withMetadata = this.applyMetadata(item, metadata);
+    return this.applyUserState(withMetadata, state);
+  }
+
   private applyMetadata(
     item: PlexMediaItem,
     metadata: Record<string, unknown> | undefined
@@ -401,11 +465,15 @@ export class PlexDiscoverClient {
     node: Record<string, unknown>,
     libraryTitle: string
   ): PlexMediaItem | undefined {
+    const type = asString(node.type);
+    if (type === "episode") {
+      return this.toShowFromEpisode(node, libraryTitle);
+    }
+
     const ratingKey = asString(node.ratingKey);
     const title = asString(node.title);
-    const type = asString(node.type);
 
-    if (!ratingKey || !title || !type) {
+    if (!ratingKey || !title || !type || (type !== "movie" && type !== "show")) {
       return undefined;
     }
 
@@ -423,6 +491,42 @@ export class PlexDiscoverClient {
       audienceRatingImage: asString(node.audienceRatingImage),
       thumb: asString(node.thumb),
       art: asString(node.art),
+      durationMs: toNumber(node.duration),
+      viewCount: toNumber(node.viewCount),
+      viewedLeafCount: toNumber(node.viewedLeafCount),
+      leafCount: toNumber(node.leafCount),
+      childCount: toNumber(node.childCount),
+      lastViewedAt: toNumber(node.lastViewedAt),
+      updatedAt: toNumber(node.updatedAt),
+      libraryTitle,
+      inWatchlist: libraryTitle === "Watchlist"
+    };
+  }
+
+  private toShowFromEpisode(
+    node: Record<string, unknown>,
+    libraryTitle: string
+  ): PlexMediaItem | undefined {
+    const showRatingKey = asString(node.grandparentRatingKey);
+    const showTitle = asString(node.grandparentTitle);
+    if (!showRatingKey || !showTitle) {
+      return undefined;
+    }
+
+    return {
+      ratingKey: showRatingKey,
+      guid: asString(node.grandparentGuid) ?? asString(node.guid),
+      type: "show",
+      title: showTitle,
+      originalTitle: asString(node.grandparentOriginalTitle) ?? asString(node.originalTitle),
+      year: toNumber(node.grandparentYear) ?? toNumber(node.year),
+      summary: asString(node.grandparentSummary) ?? asString(node.summary),
+      rating: toNumber(node.rating),
+      ratingImage: asString(node.ratingImage),
+      audienceRating: toNumber(node.audienceRating),
+      audienceRatingImage: asString(node.audienceRatingImage),
+      thumb: asString(node.grandparentThumb) ?? asString(node.thumb),
+      art: asString(node.grandparentArt) ?? asString(node.art),
       durationMs: toNumber(node.duration),
       viewCount: toNumber(node.viewCount),
       viewedLeafCount: toNumber(node.viewedLeafCount),

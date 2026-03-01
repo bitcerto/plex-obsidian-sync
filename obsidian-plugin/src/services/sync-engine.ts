@@ -1,5 +1,5 @@
 import { App } from "obsidian";
-import { MANAGED_KEYS, TECH_FILES } from "../core/constants";
+import { MANAGED_KEYS, SYNC_FIELDS, TECH_FILES } from "../core/constants";
 import {
   applyManagedSeriesSection,
   buildManagedMetadata,
@@ -80,6 +80,7 @@ export class SyncEngine {
   private deviceId: string;
   private isSyncRunning = false;
   private notePathByRatingKey = new Map<string, string>();
+  private currentLockExpiresAtMs = 0;
 
   constructor(
     app: App,
@@ -166,7 +167,7 @@ export class SyncEngine {
         report.resolvedServer = "Conta Plex";
         report.resolvedConnectionUri = "https://discover.provider.plex.tv";
         removedByDeletedNotes = await this.syncDeletedAccountItems(discoverClient, state, report);
-        this.emitStatus("Plex Sync: carregando watchlist da conta...");
+        this.emitStatus("Plex Sync: carregando watchlist e historico assistido da conta...");
         items = await this.fetchAccountItems(
           discoverClient,
           state,
@@ -332,11 +333,21 @@ export class SyncEngine {
     excludedKeys: Set<string>
   ): Promise<PlexMediaItem[]> {
     const watchlistItems = await client.listWatchlist();
+    const watchedHistoryItems = await client.listWatchedHistory();
     const dedup = new Map<string, PlexMediaItem>(
       watchlistItems
         .filter((item) => !excludedKeys.has(item.ratingKey))
         .map((item) => [item.ratingKey, item])
     );
+
+    for (const item of watchedHistoryItems) {
+      if (excludedKeys.has(item.ratingKey)) {
+        continue;
+      }
+      if (!dedup.has(item.ratingKey)) {
+        dedup.set(item.ratingKey, item);
+      }
+    }
 
     const trackedKeys = new Set<string>(
       [...Object.keys(state.items), ...noteTrackedKeys].filter((ratingKey) => !excludedKeys.has(ratingKey))
@@ -887,9 +898,7 @@ export class SyncEngine {
               ? Math.round(episode.durationMs / 60000)
               : undefined,
             pausa: normalizePauseSeed(refreshedEpisodeNote.frontmatter.pausa),
-            assistido: episode.watched,
-            sincronizado_em: nowIso(),
-            sincronizado_por: "plex"
+            assistido: episode.watched
           },
           defaultEpisodeBody(showItem.title, seasonFolderName, episode)
         );
@@ -929,9 +938,7 @@ export class SyncEngine {
           fundo_url: season.art,
           episodios: totalEpisodes,
           episodios_assistidos: watchedEpisodes,
-          assistido: seasonWatched,
-          sincronizado_em: nowIso(),
-          sincronizado_por: "plex"
+          assistido: seasonWatched
         },
         seasonBody
       );
@@ -1107,11 +1114,33 @@ export class SyncEngine {
   ): Promise<boolean> {
     const absolutePath = normalizeVaultPath(noteRoot, relativePath);
     const note = await this.store.readNote(absolutePath);
+    const managedSeed = { ...managedFrontmatter };
+    const comparableKeys = MANAGED_KEYS.filter((key) => !SYNC_FIELDS.has(key));
+    const hasManagedDataChange =
+      !note.exists ||
+      comparableKeys.some((key) =>
+        didManagedValueChange(note.frontmatter[key], managedSeed[key])
+      );
+
+    if (hasManagedDataChange) {
+      managedSeed.sincronizado_em = nowIso();
+      managedSeed.sincronizado_por = "plex";
+    } else {
+      const existingSyncedAt = asNonEmptyString(note.frontmatter.sincronizado_em);
+      const existingSyncedBy = asNonEmptyString(note.frontmatter.sincronizado_por);
+      if (existingSyncedAt) {
+        managedSeed.sincronizado_em = existingSyncedAt;
+      }
+      if (existingSyncedBy) {
+        managedSeed.sincronizado_por = existingSyncedBy;
+      }
+    }
+
     const mergedFrontmatter = mergeFrontmatter(
       note.frontmatter,
-      managedFrontmatter as never
+      managedSeed as never
     );
-    this.applyNonManagedSeedFrontmatter(mergedFrontmatter, managedFrontmatter);
+    this.applyNonManagedSeedFrontmatter(mergedFrontmatter, managedSeed);
     const body = note.exists ? note.body : initialBody;
     const rendered = this.store.renderMarkdown(mergedFrontmatter, body);
     if (note.exists && rendered === note.content) {
@@ -1419,6 +1448,7 @@ export class SyncEngine {
     };
 
     await this.store.writeJson(lockPath, lock);
+    this.currentLockExpiresAtMs = lock.expiresAt;
     return {
       acquired: true,
       lockPath
@@ -1428,12 +1458,18 @@ export class SyncEngine {
   private async extendLock(settings: PlexSyncSettings, lockPath: string): Promise<void> {
     const ttl = ensureMinNumber(settings.lockTtlSeconds, 30) * 1000;
     const now = Date.now();
+    const refreshWindow = Math.max(10_000, Math.floor(ttl / 3));
+    if (this.currentLockExpiresAtMs - now > refreshWindow) {
+      return;
+    }
+
     const lock: SyncLockFile = {
       deviceId: this.deviceId,
       acquiredAt: now,
       expiresAt: now + ttl
     };
     await this.store.writeJson(lockPath, lock);
+    this.currentLockExpiresAtMs = lock.expiresAt;
   }
 
   private async releaseLock(lockPath: string): Promise<void> {
@@ -1442,6 +1478,7 @@ export class SyncEngine {
       return;
     }
     await this.store.removeAdapterFile(lockPath);
+    this.currentLockExpiresAtMs = 0;
   }
 
   private async persistReport(report: SyncReport): Promise<void> {
@@ -1706,6 +1743,21 @@ function parseOptionalBool(value: unknown): boolean | undefined {
     }
   }
   return undefined;
+}
+
+function normalizeManagedValue(value: unknown): unknown {
+  if (value === null || value === "") {
+    return undefined;
+  }
+  return value;
+}
+
+function didManagedValueChange(current: unknown, incoming: unknown): boolean {
+  return normalizeManagedValue(current) !== normalizeManagedValue(incoming);
+}
+
+function asNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function emptyNoteData(): NoteData {

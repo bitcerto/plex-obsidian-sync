@@ -111,7 +111,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Modo conta")
       .setDesc(
-        "Sincroniza watchlist da conta e estado assistido. Nao exige Plex Media Server local."
+        "Sincroniza watchlist + historico assistido da conta. Nao exige Plex Media Server local."
       );
   }
 
