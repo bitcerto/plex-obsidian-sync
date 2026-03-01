@@ -1,4 +1,4 @@
-# Plex Obsidian Sync Plugin
+# Plex Sync Plugin
 
 Plugin Obsidian para sincronizacao bidirecional com Plex:
 
@@ -14,11 +14,12 @@ Plugin Obsidian para sincronizacao bidirecional com Plex:
 - Lock distribuido no vault para evitar sync simultaneo entre dispositivos
 - Relatorio do ultimo ciclo
 - Modo hibrido (conta Plex + selecao manual de servidor) e modo manual legado
+- Tokens sensiveis ficam em armazenamento local do dispositivo (nao sao gravados nos arquivos tecnicos do vault)
 
 ## Build
 
 ```bash
-cd /home/lucas/Projetos/plex-obsidian-sync/obsidian-plugin
+cd /home/lucas/Projetos/plex-obsidian-sync/plex-sync-obsdian-plugin
 npm install
 npm run typecheck
 npm run build
@@ -36,7 +37,7 @@ cp manifest.json main.js versions.json "/caminho/do/vault/.obsidian/plugins/plex
 ```
 
 3. Abra Obsidian -> Settings -> Community plugins -> Reload plugins
-4. Ative `Plex Obsidian Sync`
+4. Ative `Plex Sync`
 
 No Android, a mesma pasta de plugin deve estar presente no vault sincronizado pelo LiveSync.
 

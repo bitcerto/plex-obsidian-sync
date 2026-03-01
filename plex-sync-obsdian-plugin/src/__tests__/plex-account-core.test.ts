@@ -7,7 +7,7 @@ import {
 
 describe("plex-account-core", () => {
   it("monta URL de auth do Plex com PIN", () => {
-    const url = buildPlexAuthUrl("client-1", "abc123", "Plex Obsidian Sync");
+    const url = buildPlexAuthUrl("client-1", "abc123", "Plex Sync");
     expect(url).toContain("app.plex.tv/auth");
     expect(url).toContain("clientID=client-1");
     expect(url).toContain("code=abc123");

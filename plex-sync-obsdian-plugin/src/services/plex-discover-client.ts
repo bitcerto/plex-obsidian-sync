@@ -116,7 +116,7 @@ export class PlexDiscoverClient {
 
         return this.enrichMediaItems(listed.items);
       } catch (error) {
-        this.logger.debug("falha ao carregar historico assistido da conta", {
+        this.logger.debug("falha ao carregar histórico assistido da conta", {
           endpoint,
           error: String(error)
         });
@@ -124,7 +124,7 @@ export class PlexDiscoverClient {
     }
 
     this.logger.warn(
-      "Nao foi possivel carregar historico assistido da conta via Discover. Seguindo somente com watchlist."
+      "Não foi possível carregar histórico assistido da conta via Discover. Seguindo somente com watchlist."
     );
     return [];
   }
@@ -589,7 +589,20 @@ export class PlexDiscoverClient {
     baseUrl: string,
     query: Record<string, string>
   ): Promise<PlexHttpResponse> {
-    const url = this.buildUrl(baseUrl, query);
+    const first = await this.requestOnce(method, baseUrl, query, false);
+    if (first.status === 401 || first.status === 403) {
+      return this.requestOnce(method, baseUrl, query, true);
+    }
+    return first;
+  }
+
+  private async requestOnce(
+    method: "GET" | "PUT",
+    baseUrl: string,
+    query: Record<string, string>,
+    includeTokenInQuery: boolean
+  ): Promise<PlexHttpResponse> {
+    const url = this.buildUrl(baseUrl, query, includeTokenInQuery);
     this.logger.debug(`Discover request ${method} ${maskTokenInUrl(url)}`);
 
     const response = await withTimeout(
@@ -609,11 +622,17 @@ export class PlexDiscoverClient {
     };
   }
 
-  private buildUrl(baseUrl: string, query: Record<string, string>): string {
+  private buildUrl(
+    baseUrl: string,
+    query: Record<string, string>,
+    includeTokenInQuery: boolean
+  ): string {
     const params = new URLSearchParams({
-      ...query,
-      "X-Plex-Token": this.accountToken
+      ...query
     });
+    if (includeTokenInQuery) {
+      params.set("X-Plex-Token", this.accountToken);
+    }
     return `${baseUrl}?${params.toString()}`;
   }
 

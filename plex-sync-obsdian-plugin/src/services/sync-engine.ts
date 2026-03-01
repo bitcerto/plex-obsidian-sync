@@ -1,5 +1,5 @@
 import { App } from "obsidian";
-import { MANAGED_KEYS, SYNC_FIELDS, TECH_FILES } from "../core/constants";
+import { MANAGED_KEYS, TECH_FILES } from "../core/constants";
 import {
   applyManagedSeriesSection,
   buildManagedMetadata,
@@ -18,7 +18,8 @@ import {
   isOnline,
   normalizeVaultPath,
   nowIso,
-  parseBool
+  parseBool,
+  slugify
 } from "../core/utils";
 import type {
   PlexMediaItem,
@@ -139,26 +140,28 @@ export class SyncEngine {
       this.notePathByRatingKey = await this.scanNotePathsByRatingKey(settings.notesFolder);
 
       const statePath = this.getStatePath(settings);
+      const legacyStatePath = this.getLegacyStatePath(settings);
       if (options.forceFullRebuild) {
         await this.store.removeAdapterFile(statePath);
       }
 
-      const state = await this.loadState(statePath);
+      const fallbackStatePath =
+        legacyStatePath !== statePath ? legacyStatePath : undefined;
+      const state = await this.loadState(statePath, fallbackStatePath);
       const timeoutSeconds = ensureMinNumber(settings.requestTimeoutSeconds, 5);
       let removedByDeletedNotes = new Set<string>();
-
       let client: SyncClient;
       let items: PlexMediaItem[] = [];
 
       if (settings.authMode === "account_only") {
         if (!settings.plexAccountToken.trim()) {
-          throw new Error("modo conta Plex: faca login primeiro (Plex Sync: Login with Plex Account)");
+          throw new Error("modo conta Plex: faça login primeiro (Plex Sync: Login with Plex Account)");
         }
         const discoverClient = new PlexDiscoverClient(
           {
             accountToken: settings.plexAccountToken,
             clientIdentifier: settings.plexClientIdentifier,
-            product: "Plex Obsidian Sync",
+            product: "Plex Sync",
             timeoutSeconds
           },
           this.logger
@@ -167,7 +170,7 @@ export class SyncEngine {
         report.resolvedServer = "Conta Plex";
         report.resolvedConnectionUri = "https://discover.provider.plex.tv";
         removedByDeletedNotes = await this.syncDeletedAccountItems(discoverClient, state, report);
-        this.emitStatus("Plex Sync: carregando watchlist e historico assistido da conta...");
+        this.emitStatus("Plex Sync: carregando watchlist e histórico assistido da conta...");
         items = await this.fetchAccountItems(
           discoverClient,
           state,
@@ -275,10 +278,25 @@ export class SyncEngine {
 
   async writeServersCache(): Promise<void> {
     const settings = this.settingsProvider();
+    const sanitizedServers = settings.serversCache.map((server) => ({
+      machineId: server.machineId,
+      name: server.name,
+      owned: server.owned,
+      sourceTitle: server.sourceTitle,
+      provides: [...server.provides],
+      updatedAt: server.updatedAt,
+      connections: server.connections.map((connection) => ({
+        local: connection.local,
+        protocol: connection.protocol,
+        port: connection.port,
+        relay: connection.relay,
+        ipv6: connection.ipv6
+      }))
+    }));
     const payload = {
       updatedAt: nowIso(),
       authMode: settings.authMode,
-      servers: settings.serversCache
+      servers: sanitizedServers
     };
     await this.store.writeJson(this.getServersCachePath(settings), payload);
   }
@@ -486,11 +504,11 @@ export class SyncEngine {
     for (const name of requested) {
       const section = byTitle.get(name.toLowerCase());
       if (!section) {
-        this.logger.warn(`Biblioteca '${name}' nao encontrada no Plex`);
+        this.logger.warn(`Biblioteca '${name}' não encontrada no Plex`);
         continue;
       }
       if (!(section.type === "movie" || section.type === "show")) {
-        this.logger.warn(`Biblioteca '${name}' tipo '${section.type}' nao suportada`);
+        this.logger.warn(`Biblioteca '${name}' tipo '${section.type}' não suportada`);
         continue;
       }
       selected.push(section);
@@ -1115,14 +1133,7 @@ export class SyncEngine {
     const absolutePath = normalizeVaultPath(noteRoot, relativePath);
     const note = await this.store.readNote(absolutePath);
     const managedSeed = { ...managedFrontmatter };
-    const comparableKeys = MANAGED_KEYS.filter((key) => !SYNC_FIELDS.has(key));
-    const hasManagedDataChange =
-      !note.exists ||
-      comparableKeys.some((key) =>
-        didManagedValueChange(note.frontmatter[key], managedSeed[key])
-      );
-
-    if (hasManagedDataChange) {
+    if (!note.exists) {
       managedSeed.sincronizado_em = nowIso();
       managedSeed.sincronizado_por = "plex";
     } else {
@@ -1321,7 +1332,7 @@ export class SyncEngine {
     }
 
     if (!settings.plexAccountToken.trim()) {
-      throw new Error("modo conta Plex: faca login primeiro (Plex Sync: Login with Plex Account)");
+      throw new Error("modo conta Plex: faça login primeiro (Plex Sync: Login with Plex Account)");
     }
 
     if (!settings.selectedServerMachineId.trim()) {
@@ -1333,7 +1344,7 @@ export class SyncEngine {
     );
 
     if (!server) {
-      throw new Error("servidor selecionado nao encontrado no cache. Rode 'Refresh Plex Servers'");
+      throw new Error("servidor selecionado não encontrado no cache. Rode 'Refresh Plex Servers'");
     }
 
     const orderedConnections = orderConnections(server.connections, settings.connectionStrategy);
@@ -1397,8 +1408,11 @@ export class SyncEngine {
     };
   }
 
-  private async loadState(path: string): Promise<SyncStateFile> {
-    const raw = await this.store.readJson<SyncStateFile>(path);
+  private async loadState(path: string, fallbackPath?: string): Promise<SyncStateFile> {
+    let raw = await this.store.readJson<SyncStateFile>(path);
+    if (!raw && fallbackPath) {
+      raw = await this.store.readJson<SyncStateFile>(fallbackPath);
+    }
     if (!raw || typeof raw !== "object") {
       return { version: 1, items: {} };
     }
@@ -1411,6 +1425,14 @@ export class SyncEngine {
   }
 
   private getStatePath(settings: PlexSyncSettings): string {
+    if (settings.authMode === "account_only") {
+      const scope = buildAccountStateScope(settings);
+      return normalizeVaultPath(settings.notesFolder, `${TECH_FILES.state.slice(0, -5)}-${scope}.json`);
+    }
+    return normalizeVaultPath(settings.notesFolder, TECH_FILES.state);
+  }
+
+  private getLegacyStatePath(settings: PlexSyncSettings): string {
     return normalizeVaultPath(settings.notesFolder, TECH_FILES.state);
   }
 
@@ -1745,17 +1767,6 @@ function parseOptionalBool(value: unknown): boolean | undefined {
   return undefined;
 }
 
-function normalizeManagedValue(value: unknown): unknown {
-  if (value === null || value === "") {
-    return undefined;
-  }
-  return value;
-}
-
-function didManagedValueChange(current: unknown, incoming: unknown): boolean {
-  return normalizeManagedValue(current) !== normalizeManagedValue(incoming);
-}
-
 function asNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
@@ -1782,4 +1793,18 @@ function mergeSyncSource(current: string, incoming: "plex" | "obsidian" | "both"
     return current;
   }
   return "both";
+}
+
+function buildAccountStateScope(settings: PlexSyncSettings): string {
+  const email = settings.plexAccountEmail?.trim().toLowerCase();
+  if (email) {
+    return slugify(email);
+  }
+
+  const clientIdentifier = settings.plexClientIdentifier?.trim();
+  if (clientIdentifier) {
+    return slugify(clientIdentifier);
+  }
+
+  return "account";
 }

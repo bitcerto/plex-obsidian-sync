@@ -1,5 +1,5 @@
 import type { ConflictPolicy, ManagedFrontmatter, PlexMediaItem } from "../types";
-import { MANAGED_KEYS, SYNC_FIELDS } from "./constants";
+import { MANAGED_KEYS } from "./constants";
 import { epochSecondsToIso, nowIso } from "./utils";
 
 const SERIES_SECTION_START = "<!-- plex-series-details:start -->";
@@ -66,14 +66,7 @@ export function buildManagedMetadata(params: {
     ultima_visualizacao_plex: epochSecondsToIso(item.lastViewedAt),
     atualizado_plex_em: epochSecondsToIso(item.updatedAt)
   };
-  const baseRecord = base as unknown as Record<string, unknown>;
-
-  const comparableKeys = MANAGED_KEYS.filter((key) => !SYNC_FIELDS.has(key));
-  const hasDataChange = comparableKeys.some((key) => {
-    return existingMeta[key] !== baseRecord[key];
-  });
-
-  if (!noteExists || syncSource !== "none" || hasDataChange) {
+  if (!noteExists || syncSource !== "none") {
     base.sincronizado_em = nowIso();
     base.sincronizado_por = syncSource;
   } else {

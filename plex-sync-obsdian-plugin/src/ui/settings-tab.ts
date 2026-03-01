@@ -28,7 +28,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Plex Obsidian Sync" });
+    containerEl.createEl("h2", { text: "Plex Sync" });
 
     this.renderAuthSettings(containerEl);
     this.renderSyncSettings(containerEl);
@@ -36,10 +36,10 @@ export class PlexSyncSettingTab extends PluginSettingTab {
   }
 
   private renderAuthSettings(containerEl: HTMLElement): void {
-    containerEl.createEl("h3", { text: "Autenticacao" });
+    containerEl.createEl("h3", { text: "Autenticação" });
 
     new Setting(containerEl)
-      .setName("Modo de autenticacao")
+      .setName("Modo de autenticação")
       .setDesc("Conta Plex (recomendado) ou PMS manual")
       .addDropdown((dropdown) =>
         dropdown
@@ -75,15 +75,15 @@ export class PlexSyncSettingTab extends PluginSettingTab {
       .setName("Status da conta Plex")
       .setDesc(
         hasToken
-          ? `Conta conectada (${accountIdentity || "email indisponivel"}).`
-          : "Conta nao conectada. Use o login por PIN."
+          ? `Conta conectada (${accountIdentity || "e-mail indisponível"}).`
+          : "Conta não conectada. Use o login por PIN."
       );
 
     const actions = new Setting(containerEl)
-      .setName("Acoes da conta")
+      .setName("Ações da conta")
       .setDesc(
         hasToken
-          ? `Conta conectada: ${accountIdentity || "email indisponivel"}`
+          ? `Conta conectada: ${accountIdentity || "e-mail indisponível"}`
           : "Login e logout"
       );
 
@@ -111,7 +111,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Modo conta")
       .setDesc(
-        "Sincroniza watchlist + historico assistido da conta. Nao exige Plex Media Server local."
+        "Sincroniza watchlist + histórico assistido da conta. Não exige Plex Media Server local."
       );
   }
 
@@ -123,15 +123,15 @@ export class PlexSyncSettingTab extends PluginSettingTab {
       .setName("Status da conta Plex")
       .setDesc(
         hasToken
-          ? `Conta conectada (${accountIdentity || "email indisponivel"}).`
-          : "Conta nao conectada. Use o login por PIN."
+          ? `Conta conectada (${accountIdentity || "e-mail indisponível"}).`
+          : "Conta não conectada. Use o login por PIN."
       );
 
     const actions = new Setting(containerEl)
-      .setName("Acoes da conta")
+      .setName("Ações da conta")
       .setDesc(
         hasToken
-          ? `Conta conectada: ${accountIdentity || "email indisponivel"}`
+          ? `Conta conectada: ${accountIdentity || "e-mail indisponível"}`
           : "Login, refresh de servidores e logout"
       );
 
@@ -188,8 +188,8 @@ export class PlexSyncSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Estrategia de conexao")
-      .setDesc("Prioridade de conexao ao servidor")
+      .setName("Estratégia de conexão")
+      .setDesc("Prioridade de conexão ao servidor")
       .addDropdown((dropdown) =>
         dropdown
           .addOption("remote_first", "Remoto primeiro")
@@ -233,11 +233,11 @@ export class PlexSyncSettingTab extends PluginSettingTab {
   }
 
   private renderSyncSettings(containerEl: HTMLElement): void {
-    containerEl.createEl("h3", { text: "Sincronizacao" });
+    containerEl.createEl("h3", { text: "Sincronização" });
 
     new Setting(containerEl)
       .setName("Bibliotecas")
-      .setDesc("Separadas por virgula. Vazio = todas movie/show")
+      .setDesc("Separadas por vírgula. Vazio = todas movie/show")
       .addTextArea((text) =>
         text
           .setPlaceholder("Filmes,Series")
@@ -253,7 +253,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Pasta das notas")
-      .setDesc("Pasta no vault para notas e arquivos tecnicos")
+      .setDesc("Pasta no vault para notas e arquivos técnicos")
       .addText((text) =>
         text.setValue(this.host.settings.notesFolder).onChange(async (value) => {
           this.host.settings.notesFolder = value.trim() || "Media-Plex";
@@ -262,7 +262,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Politica de conflito")
+      .setName("Política de conflito")
       .setDesc("Quando Plex e Obsidian mudam no mesmo ciclo")
       .addDropdown((dropdown) =>
         dropdown
@@ -286,7 +286,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
       .addDropdown((dropdown) =>
         dropdown
           .addOption("auto_obsidian", "Auto (Obsidian)")
-          .addOption("pt_br", "Portugues (pt-BR)")
+          .addOption("pt_br", "Português (pt-BR)")
           .addOption("en_us", "English (en-US)")
           .setValue(this.host.settings.frontmatterKeyLanguage)
           .onChange(async (value) => {
@@ -297,7 +297,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Sync automatico")
+      .setName("Sync automático")
       .setDesc("Quando desligado, o Plex -> Obsidian roda apenas em 'Sync Now'")
       .addToggle((toggle) =>
         toggle.setValue(this.host.settings.autoSyncEnabled).onChange(async (value) => {
@@ -311,7 +311,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Intervalo de sync (segundos)")
-      .setDesc("Minimo 30")
+      .setDesc("Mínimo 30")
       .addText((text) => {
         text
           .setValue(String(this.host.settings.syncIntervalSeconds))
@@ -355,7 +355,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
   }
 
   private renderAdvancedSettings(containerEl: HTMLElement): void {
-    containerEl.createEl("h3", { text: "Avancado" });
+    containerEl.createEl("h3", { text: "Avançado" });
 
     new Setting(containerEl)
       .setName("Sincronizar somente online")
@@ -397,7 +397,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Logs debug")
-      .setDesc("Nao inclui token")
+      .setDesc("Não inclui token")
       .addToggle((toggle) =>
         toggle.setValue(this.host.settings.debugLogs).onChange(async (value) => {
           this.host.settings.debugLogs = value;

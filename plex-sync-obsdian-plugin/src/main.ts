@@ -1,6 +1,6 @@
 import { Notice, Plugin } from "obsidian";
 import { DEFAULT_SETTINGS, PLUGIN_ID } from "./core/constants";
-import { ensureMinNumber } from "./core/utils";
+import { ensureMinNumber, normalizeVaultPath } from "./core/utils";
 import { PlexDiscoverClient } from "./services/plex-discover-client";
 import { Logger } from "./services/logger";
 import { SyncEngine } from "./services/sync-engine";
@@ -10,8 +10,10 @@ import { DiscoverSearchModal } from "./ui/discover-search-modal";
 import { ReportModal } from "./ui/report-modal";
 import { PlexSyncSettingTab } from "./ui/settings-tab";
 
-const PRODUCT_NAME = "Plex Obsidian Sync";
+const PRODUCT_NAME = "Plex Sync";
 const LOCAL_DEVICE_ID_KEY = "plex-obsidian-sync.local-device-id";
+const LOCAL_ACCOUNT_TOKEN_KEY = "plex-obsidian-sync.account-token";
+const LOCAL_PMS_TOKEN_KEY = "plex-obsidian-sync.pms-token";
 
 export default class PlexObsidianSyncPlugin extends Plugin {
   settings: PlexSyncSettings = { ...DEFAULT_SETTINGS };
@@ -21,6 +23,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   private statusBar?: HTMLElement;
   private startupTimer: number | null = null;
   private intervalTimer: number | null = null;
+  private deleteSyncTimer: number | null = null;
   private loginInProgress = false;
 
   async onload(): Promise<void> {
@@ -41,6 +44,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
     this.addSettingTab(new PlexSyncSettingTab(this.app, this));
     this.registerCommands();
+    this.registerDeleteSyncHook();
     this.scheduleSyncJobs();
 
     this.logger.info(`${PLUGIN_ID} carregado`);
@@ -92,7 +96,8 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       this.settings.plexClientIdentifier = generateClientIdentifier();
     }
 
-    await this.saveData(this.settings);
+    this.persistSecretsToLocal();
+    await this.saveData(this.buildPersistedSettings());
     this.logger.setDebugEnabled(this.settings.debugLogs);
     this.scheduleSyncJobs();
 
@@ -103,7 +108,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
   async loginWithPlexAccount(): Promise<void> {
     if (this.loginInProgress) {
-      new Notice("Plex Sync: login ja em andamento");
+      new Notice("Plex Sync: login já em andamento");
       return;
     }
 
@@ -122,15 +127,15 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
       const opened = window.open(pin.authUrl, "_blank");
       if (!opened) {
-        new Notice("Plex Sync: nao foi possivel abrir o navegador automaticamente");
+        new Notice("Plex Sync: não foi possível abrir o navegador automaticamente");
       }
 
-      new Notice("Plex Sync: conclua o login na pagina Plex aberta. Aguardando autorizacao...", 8000);
+      new Notice("Plex Sync: conclua o login na página Plex aberta. Aguardando autorização...", 8000);
       this.setStatus("Plex Sync: aguardando login Plex...");
 
       const token = await this.waitForPinAuth(client, pin);
       if (!token) {
-        throw new Error("tempo esgotado aguardando autorizacao do PIN");
+        throw new Error("tempo esgotado aguardando autorização do PIN");
       }
 
       const user = await client.validateUser(token);
@@ -142,7 +147,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       }
       await this.saveSettings();
 
-      new Notice("Plex Sync: login da conta Plex concluido", 5000);
+      new Notice("Plex Sync: login da conta Plex concluído", 5000);
       if (this.settings.authMode === "hybrid_account") {
         await this.refreshPlexServers();
       }
@@ -158,7 +163,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   async refreshPlexServers(): Promise<void> {
     try {
       if (!this.settings.plexAccountToken.trim()) {
-        new Notice("Plex Sync: faca login com a conta Plex antes de atualizar servidores");
+        new Notice("Plex Sync: faça login com a conta Plex antes de atualizar servidores");
         return;
       }
 
@@ -185,7 +190,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
           return;
         }
         new Notice(
-          "Plex Sync: 0 servidores encontrados nesta conta Plex. Verifique se o PMS esta vinculado a esta conta (ou compartilhado para ela), ou use modo manual.",
+          "Plex Sync: 0 servidores encontrados nesta conta Plex. Verifique se o PMS está vinculado a esta conta (ou compartilhado para ela), ou use modo manual.",
           10000
         );
       } else {
@@ -208,8 +213,10 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
   private async loadSettings(): Promise<void> {
     const raw = (await this.loadData()) as Partial<PlexSyncSettings> | null;
+    const localAccountToken = readLocalSecret(LOCAL_ACCOUNT_TOKEN_KEY);
+    const localPmsToken = readLocalSecret(LOCAL_PMS_TOKEN_KEY);
 
-    const migratedAuthMode = inferAuthMode(raw);
+    const migratedAuthMode = inferAuthMode(raw, localPmsToken);
     this.settings = {
       ...DEFAULT_SETTINGS,
       ...(raw || {}),
@@ -255,7 +262,32 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       this.settings.plexClientIdentifier = generateClientIdentifier();
     }
 
-    await this.saveData(this.settings);
+    const rawAccountToken = typeof raw?.plexAccountToken === "string" ? raw.plexAccountToken.trim() : "";
+    const rawPmsToken = typeof raw?.plexToken === "string" ? raw.plexToken.trim() : "";
+    this.settings.plexAccountToken = localAccountToken || rawAccountToken;
+    this.settings.plexToken = localPmsToken || rawPmsToken;
+
+    this.persistSecretsToLocal();
+    await this.saveData(this.buildPersistedSettings());
+  }
+
+  private buildPersistedSettings(): PlexSyncSettings {
+    const sanitizedServers = this.settings.serversCache.map((server) => {
+      const { accessToken: _omitAccessToken, ...rest } = server;
+      return { ...rest };
+    });
+
+    return {
+      ...this.settings,
+      plexAccountToken: "",
+      plexToken: "",
+      serversCache: sanitizedServers
+    };
+  }
+
+  private persistSecretsToLocal(): void {
+    writeLocalSecret(LOCAL_ACCOUNT_TOKEN_KEY, this.settings.plexAccountToken);
+    writeLocalSecret(LOCAL_PMS_TOKEN_KEY, this.settings.plexToken);
   }
 
   private registerCommands(): void {
@@ -372,6 +404,11 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       window.clearInterval(this.intervalTimer);
       this.intervalTimer = null;
     }
+
+    if (this.deleteSyncTimer !== null) {
+      window.clearTimeout(this.deleteSyncTimer);
+      this.deleteSyncTimer = null;
+    }
   }
 
   private async executeSync(reason: string, forceFullRebuild = false): Promise<{
@@ -379,7 +416,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     skipped: boolean;
   } | null> {
     if (!this.engine) {
-      new Notice("Plex Sync: engine nao inicializado");
+      new Notice("Plex Sync: engine não inicializado");
       return null;
     }
 
@@ -398,19 +435,25 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
   private handleReport(report: SyncReport, skipped: boolean): void {
     if (skipped && report.skipped) {
+      if (report.reason === "note-delete") {
+        this.setStatus(`Plex Sync: ${report.skipped}`);
+        return;
+      }
       new Notice(`Plex Sync: ${report.skipped}`);
       this.setStatus(`Plex Sync: ${report.skipped}`);
       return;
     }
+
+    const silentSuccess = report.reason === "note-delete";
 
     if (report.errors.length > 0) {
       new Notice(
         `Plex Sync com erros: itens=${report.totalItems}, erros=${report.errors.length}`,
         6000
       );
-    } else {
+    } else if (!silentSuccess) {
       new Notice(
-        `Plex Sync concluido: itens=${report.totalItems}, notas+${report.createdNotes}, atualizacoes=${report.updatedNotes}`,
+        `Plex Sync concluído: itens=${report.totalItems}, notas+${report.createdNotes}, atualizações=${report.updatedNotes}`,
         5000
       );
     }
@@ -435,7 +478,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
     const report = await this.engine.readLastReport();
     if (!report) {
-      new Notice("Plex Sync: nenhum relatorio encontrado");
+      new Notice("Plex Sync: nenhum relatório encontrado");
       return;
     }
 
@@ -449,7 +492,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     }
 
     if (!this.settings.plexAccountToken.trim()) {
-      new Notice("Plex Sync: faca login com a conta Plex antes de buscar.");
+      new Notice("Plex Sync: faça login com a conta Plex antes de buscar.");
       return;
     }
 
@@ -463,7 +506,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
           syncResult?.skipped &&
           syncResult.report.skipped?.startsWith("lock mantido por")
         ) {
-          new Notice("Adicionado no Plex. Sync local sera tentado novamente em 3s.", 5000);
+          new Notice("Adicionado no Plex. Sync local será tentado novamente em 3s.", 5000);
           window.setTimeout(() => {
             void this.executeSync("search-add-retry");
           }, 3000);
@@ -524,6 +567,47 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     this.statusBar?.setText(text);
   }
 
+  private registerDeleteSyncHook(): void {
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        if (this.settings.authMode !== "account_only") {
+          return;
+        }
+        if (!this.settings.plexAccountToken.trim()) {
+          return;
+        }
+
+        const filePath = normalizeVaultPath((file as { path?: string }).path || "");
+        if (!filePath.endsWith(".md")) {
+          return;
+        }
+
+        const notesRoot = normalizeVaultPath(this.settings.notesFolder);
+        const notesPrefix = notesRoot ? `${notesRoot}/` : "";
+        if (!filePath.startsWith(notesPrefix)) {
+          return;
+        }
+
+        const fileName = filePath.split("/").pop() || "";
+        if (fileName.startsWith(".plex-")) {
+          return;
+        }
+
+        this.scheduleDeleteSync();
+      })
+    );
+  }
+
+  private scheduleDeleteSync(): void {
+    if (this.deleteSyncTimer !== null) {
+      window.clearTimeout(this.deleteSyncTimer);
+    }
+    this.deleteSyncTimer = window.setTimeout(() => {
+      this.deleteSyncTimer = null;
+      void this.executeSync("note-delete");
+    }, 1200);
+  }
+
   private canRunSync(reason: string): boolean {
     if (this.settings.authMode === "manual") {
       return true;
@@ -531,7 +615,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
     if (!this.settings.plexAccountToken.trim()) {
       if (reason === "manual" || reason === "startup") {
-        new Notice("Plex Sync: faca login com a conta Plex para iniciar a sincronizacao", 6000);
+        new Notice("Plex Sync: faça login com a conta Plex para iniciar a sincronização", 6000);
       }
       this.setStatus("Plex Sync: aguardando login Plex");
       return false;
@@ -555,7 +639,10 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   }
 }
 
-function inferAuthMode(raw: Partial<PlexSyncSettings> | null): PlexSyncSettings["authMode"] {
+function inferAuthMode(
+  raw: Partial<PlexSyncSettings> | null,
+  localPmsToken?: string
+): PlexSyncSettings["authMode"] {
   if (
     raw?.authMode === "manual" ||
     raw?.authMode === "hybrid_account" ||
@@ -564,7 +651,9 @@ function inferAuthMode(raw: Partial<PlexSyncSettings> | null): PlexSyncSettings[
     return raw.authMode;
   }
 
-  const hasManual = Boolean(raw?.plexBaseUrl?.trim() && raw?.plexToken?.trim());
+  const rawToken = raw?.plexToken?.trim();
+  const manualToken = localPmsToken?.trim() || rawToken;
+  const hasManual = Boolean(raw?.plexBaseUrl?.trim() && manualToken);
   return hasManual ? "manual" : "hybrid_account";
 }
 
@@ -588,6 +677,28 @@ function getOrCreateLocalDeviceId(): string {
     return value;
   } catch {
     return `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
+
+function readLocalSecret(key: string): string {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value && value.trim().length > 0 ? value.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function writeLocalSecret(key: string, value: string): void {
+  const normalized = value.trim();
+  try {
+    if (normalized.length === 0) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, normalized);
+  } catch {
+    // no-op
   }
 }
 
