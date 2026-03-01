@@ -570,10 +570,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   private registerDeleteSyncHook(): void {
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (this.settings.authMode !== "account_only") {
-          return;
-        }
-        if (!this.settings.plexAccountToken.trim()) {
+        if (!this.canScheduleDeleteSync()) {
           return;
         }
 
@@ -595,6 +592,24 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
         this.scheduleDeleteSync();
       })
+    );
+  }
+
+  private canScheduleDeleteSync(): boolean {
+    if (this.settings.authMode === "account_only") {
+      return this.settings.plexAccountToken.trim().length > 0;
+    }
+
+    if (this.settings.authMode === "hybrid_account") {
+      return (
+        this.settings.plexAccountToken.trim().length > 0 &&
+        this.settings.selectedServerMachineId.trim().length > 0
+      );
+    }
+
+    return (
+      this.settings.plexBaseUrl.trim().length > 0 &&
+      this.settings.plexToken.trim().length > 0
     );
   }
 
