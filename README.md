@@ -129,6 +129,7 @@ Quando os dois lados mudam no mesmo ciclo:
 Para uso em Windows/Linux/Android sem host sempre ligado, use o plugin em:
 
 - `/home/lucas/Projetos/plex-obsidian-sync/plex-sync-obsdian-plugin`
+- Guia do usuario: `/home/lucas/Projetos/plex-obsidian-sync/plex-sync-obsdian-plugin/docs/GUIA-USUARIO.md`
 
 O script `sync.py` permanece como fallback.
 
