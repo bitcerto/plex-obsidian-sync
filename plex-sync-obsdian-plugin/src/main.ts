@@ -29,6 +29,8 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   private syncingNow = false;
   private ignoreModifySyncUntil = 0;
   private watchedSignatureByPath = new Map<string, string>();
+  private pendingPreferredObsidianKeys = new Set<string>();
+  private pendingPreferredObsidianWatchedByKey = new Map<string, boolean>();
   private loginInProgress = false;
 
   async onload(): Promise<void> {
@@ -423,7 +425,12 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     }
   }
 
-  private async executeSync(reason: string, forceFullRebuild = false): Promise<{
+  private async executeSync(
+    reason: string,
+    forceFullRebuild = false,
+    preferredObsidianKeys?: string[],
+    preferredObsidianWatchedByKey?: Record<string, boolean>
+  ): Promise<{
     report: SyncReport;
     skipped: boolean;
   } | null> {
@@ -440,7 +447,9 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     try {
       const result = await this.engine.runSync({
         reason,
-        forceFullRebuild
+        forceFullRebuild,
+        preferredObsidianKeys,
+        preferredObsidianWatchedByKey
       });
 
       this.handleReport(result.report, result.skipped);
@@ -658,7 +667,13 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     }
     this.modifySyncTimer = window.setTimeout(() => {
       this.modifySyncTimer = null;
-      void this.executeSync("note-modify");
+      const preferredKeys = Array.from(this.pendingPreferredObsidianKeys);
+      const preferredWatchedByKey = Object.fromEntries(
+        Array.from(this.pendingPreferredObsidianWatchedByKey.entries())
+      );
+      this.pendingPreferredObsidianKeys.clear();
+      this.pendingPreferredObsidianWatchedByKey.clear();
+      void this.executeSync("note-modify", false, preferredKeys, preferredWatchedByKey);
     }, 1200);
   }
 
@@ -672,7 +687,15 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     const previousSignature = this.watchedSignatureByPath.get(filePath);
     this.watchedSignatureByPath.set(filePath, nextSignature);
 
-    if (previousSignature && previousSignature !== nextSignature) {
+    if (previousSignature !== nextSignature) {
+      const ratingKey = extractRatingKeyFromSignature(nextSignature);
+      if (ratingKey) {
+        this.pendingPreferredObsidianKeys.add(ratingKey);
+        const watched = extractWatchedFromSignature(nextSignature);
+        if (typeof watched === "boolean") {
+          this.pendingPreferredObsidianWatchedByKey.set(ratingKey, watched);
+        }
+      }
       this.scheduleModifySync();
     }
   }
@@ -846,6 +869,30 @@ function buildWatchedSignature(markdown: string): string | undefined {
   const watchedValue = typeof watched === "boolean" ? (watched ? "1" : "0") : "u";
   const checkboxState = type === "season" ? extractSeasonCheckboxSnapshot(parsed.content) : "";
   return `${type}|${ratingKey}|${watchedValue}|${checkboxState}`;
+}
+
+function extractRatingKeyFromSignature(signature: string): string | undefined {
+  const parts = signature.split("|");
+  if (parts.length < 2) {
+    return undefined;
+  }
+  const ratingKey = parts[1].trim();
+  return ratingKey.length > 0 ? ratingKey : undefined;
+}
+
+function extractWatchedFromSignature(signature: string): boolean | undefined {
+  const parts = signature.split("|");
+  if (parts.length < 3) {
+    return undefined;
+  }
+  const value = parts[2].trim();
+  if (value === "1") {
+    return true;
+  }
+  if (value === "0") {
+    return false;
+  }
+  return undefined;
 }
 
 function normalizeFrontmatterKeys(frontmatter: Record<string, unknown>): Record<string, unknown> {

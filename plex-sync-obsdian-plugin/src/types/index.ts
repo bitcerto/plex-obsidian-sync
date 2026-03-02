@@ -213,6 +213,8 @@ export interface SyncReport {
 export interface SyncOptions {
   reason: string;
   forceFullRebuild?: boolean;
+  preferredObsidianKeys?: string[];
+  preferredObsidianWatchedByKey?: Record<string, boolean>;
 }
 
 export interface SyncExecutionResult {

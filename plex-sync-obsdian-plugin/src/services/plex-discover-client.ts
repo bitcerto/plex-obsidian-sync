@@ -214,11 +214,24 @@ export class PlexDiscoverClient {
 
   async markWatched(ratingKey: string, watched: boolean): Promise<void> {
     const action = watched ? "scrobble" : "unscrobble";
-    await this.requestJson(
-      "PUT",
-      `${DISCOVER_BASE}/actions/${action}`,
-      { key: ratingKey },
-      false
+    const paramsCandidates = buildWatchedActionParamCandidates(ratingKey);
+
+    for (const params of paramsCandidates) {
+      await this.requestJson(
+        "PUT",
+        `${DISCOVER_BASE}/actions/${action}`,
+        params,
+        false
+      );
+
+      const confirmed = await this.confirmWatchedState(ratingKey, watched);
+      if (confirmed === true || confirmed === undefined) {
+        return;
+      }
+    }
+
+    throw new Error(
+      `Plex Discover não confirmou alteração de assistido para ratingKey=${ratingKey}`
     );
   }
 
@@ -313,6 +326,40 @@ export class PlexDiscoverClient {
       true
     );
     return response?.MediaContainer?.UserState;
+  }
+
+  private async confirmWatchedState(
+    ratingKey: string,
+    expectedWatched: boolean
+  ): Promise<boolean | undefined> {
+    let sawKnownState = false;
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      let state: Record<string, unknown> | undefined;
+      try {
+        state = await this.getUserState(ratingKey);
+      } catch {
+        state = undefined;
+      }
+
+      const watchedState = inferWatchedFromUserState(state);
+      if (typeof watchedState === "boolean") {
+        sawKnownState = true;
+        if (watchedState === expectedWatched) {
+          return true;
+        }
+      }
+
+      if (attempt < 3) {
+        await sleep(250);
+      }
+    }
+
+    if (!sawKnownState) {
+      // Nem todo conteúdo expõe estado completo via endpoint.
+      return undefined;
+    }
+    return false;
   }
 
   private async getMetadataDetails(ratingKey: string): Promise<Record<string, unknown> | undefined> {
@@ -727,5 +774,63 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
         window.clearTimeout(timer);
         reject(error);
       });
+  });
+}
+
+function buildWatchedActionParamCandidates(ratingKey: string): Array<Record<string, string>> {
+  const variants: Array<Record<string, string>> = [
+    { key: ratingKey },
+    { ratingKey },
+    { identifier: ratingKey },
+    { key: ratingKey, ratingKey }
+  ];
+
+  const unique = new Set<string>();
+  const result: Array<Record<string, string>> = [];
+  for (const entry of variants) {
+    const normalized = Object.keys(entry)
+      .sort()
+      .map((key) => `${key}=${entry[key]}`)
+      .join("&");
+    if (unique.has(normalized)) {
+      continue;
+    }
+    unique.add(normalized);
+    result.push(entry);
+  }
+  return result;
+}
+
+function inferWatchedFromUserState(state: Record<string, unknown> | undefined): boolean | undefined {
+  if (!state) {
+    return undefined;
+  }
+
+  const viewCount = toNumber(state.viewCount);
+  if (typeof viewCount === "number") {
+    return viewCount > 0;
+  }
+
+  const lastViewedAt = toNumber(state.lastViewedAt);
+  if (typeof lastViewedAt === "number" && lastViewedAt > 0) {
+    return true;
+  }
+
+  const viewedLeafCount = toNumber(state.viewedLeafCount);
+  const leafCount = toNumber(state.leafCount);
+  if (
+    typeof viewedLeafCount === "number" &&
+    typeof leafCount === "number" &&
+    leafCount > 0
+  ) {
+    return viewedLeafCount >= leafCount;
+  }
+
+  return undefined;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
   });
 }

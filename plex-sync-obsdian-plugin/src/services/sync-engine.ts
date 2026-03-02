@@ -197,6 +197,21 @@ export class SyncEngine {
       report.totalItems = items.length;
 
       const nextItems: Record<string, SyncItemState> = {};
+      const preferredObsidianKeys = new Set<string>(
+        Array.isArray(options.preferredObsidianKeys)
+          ? options.preferredObsidianKeys
+              .filter((entry) => typeof entry === "string")
+              .map((entry) => entry.trim())
+              .filter((entry) => entry.length > 0)
+          : []
+      );
+      const preferredObsidianWatchedByKey = new Map<string, boolean>(
+        options.preferredObsidianWatchedByKey
+          ? Object.entries(options.preferredObsidianWatchedByKey).filter(
+              (entry): entry is [string, boolean] => typeof entry[1] === "boolean"
+            )
+          : []
+      );
 
       for (let index = 0; index < items.length; index += 1) {
         const item = items[index];
@@ -206,7 +221,14 @@ export class SyncEngine {
           await this.extendLock(settings, lockPath);
           this.emitStatus(`Plex Sync: ${index + 1}/${items.length}`);
 
-          const result = await this.syncSingleItem(item, prev, settings, client);
+          const result = await this.syncSingleItem(
+            item,
+            prev,
+            settings,
+            client,
+            preferredObsidianKeys.has(item.ratingKey),
+            preferredObsidianWatchedByKey.get(item.ratingKey)
+          );
           if (result.noteCreated) {
             report.createdNotes += 1;
           }
@@ -521,7 +543,9 @@ export class SyncEngine {
     item: PlexMediaItem,
     previousState: SyncItemState | undefined,
     settings: PlexSyncSettings,
-    client: SyncClient
+    client: SyncClient,
+    preferObsidianWhenStateMissing = false,
+    preferredObsidianWatched?: boolean
   ): Promise<SyncItemResult> {
     const noteRoot = normalizeVaultPath(settings.notesFolder);
     const previousRelPath = previousState?.notePath;
@@ -542,6 +566,10 @@ export class SyncEngine {
           plexCurrentWatchlisted
         )
       : plexCurrentWatchlisted;
+
+    if (typeof preferredObsidianWatched === "boolean") {
+      obsidianWatched = preferredObsidianWatched;
+    }
 
     // Regra do modo conta: item assistido deve permanecer na lista para assistir.
     if (obsidianWatched) {
@@ -569,8 +597,16 @@ export class SyncEngine {
     let conflict = false;
     let syncSource = "none";
     const supportsWatchlist = typeof client.setWatchlisted === "function";
+    let forcedObsidianApplied = false;
 
-    if (!hasPrevious) {
+    if (preferObsidianWhenStateMissing) {
+      if (obsidianWatched !== plexCurrentWatched) {
+        await client.markWatched(item.ratingKey, obsidianWatched);
+        plexCurrentWatched = obsidianWatched;
+        plexUpdated = true;
+        forcedObsidianApplied = true;
+      }
+    } else if (!hasPrevious) {
       syncSource = "plex";
     } else if (plexChanged && !obsidianChanged) {
       obsidianWatched = plexCurrentWatched;
@@ -605,7 +641,14 @@ export class SyncEngine {
     }
 
     if (supportsWatchlist) {
-      if (!hasPrevious) {
+      if (preferObsidianWhenStateMissing) {
+        if (obsidianWatchlisted !== plexCurrentWatchlisted) {
+          await client.setWatchlisted!(item.ratingKey, obsidianWatchlisted);
+          plexCurrentWatchlisted = obsidianWatchlisted;
+          plexUpdated = true;
+          forcedObsidianApplied = true;
+        }
+      } else if (!hasPrevious) {
         syncSource = mergeSyncSource(syncSource, "plex");
       } else if (plexWatchlistedChanged && !obsidianWatchlistedChanged) {
         obsidianWatchlisted = plexCurrentWatchlisted;
@@ -656,6 +699,10 @@ export class SyncEngine {
       }
     } else {
       obsidianWatchlisted = plexCurrentWatchlisted;
+    }
+
+    if (forcedObsidianApplied) {
+      syncSource = mergeSyncSource(syncSource, "obsidian");
     }
 
     if (!note.exists) {
