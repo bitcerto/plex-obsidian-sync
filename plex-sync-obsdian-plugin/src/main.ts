@@ -1,5 +1,6 @@
 import { Notice, Plugin } from "obsidian";
-import { DEFAULT_SETTINGS, PLUGIN_ID } from "./core/constants";
+import matter from "gray-matter";
+import { DEFAULT_SETTINGS, PLUGIN_ID, PROPERTY_KEY_ALIASES_REVERSE } from "./core/constants";
 import { ensureMinNumber, normalizeVaultPath } from "./core/utils";
 import { PlexDiscoverClient } from "./services/plex-discover-client";
 import { Logger } from "./services/logger";
@@ -24,6 +25,10 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   private startupTimer: number | null = null;
   private intervalTimer: number | null = null;
   private deleteSyncTimer: number | null = null;
+  private modifySyncTimer: number | null = null;
+  private syncingNow = false;
+  private ignoreModifySyncUntil = 0;
+  private watchedSignatureByPath = new Map<string, string>();
   private loginInProgress = false;
 
   async onload(): Promise<void> {
@@ -45,6 +50,8 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     this.addSettingTab(new PlexSyncSettingTab(this.app, this));
     this.registerCommands();
     this.registerDeleteSyncHook();
+    this.registerModifySyncHook();
+    await this.seedWatchedSignatures();
     this.scheduleSyncJobs();
 
     this.logger.info(`${PLUGIN_ID} carregado`);
@@ -409,6 +416,11 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       window.clearTimeout(this.deleteSyncTimer);
       this.deleteSyncTimer = null;
     }
+
+    if (this.modifySyncTimer !== null) {
+      window.clearTimeout(this.modifySyncTimer);
+      this.modifySyncTimer = null;
+    }
   }
 
   private async executeSync(reason: string, forceFullRebuild = false): Promise<{
@@ -424,18 +436,24 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       return null;
     }
 
-    const result = await this.engine.runSync({
-      reason,
-      forceFullRebuild
-    });
+    this.syncingNow = true;
+    try {
+      const result = await this.engine.runSync({
+        reason,
+        forceFullRebuild
+      });
 
-    this.handleReport(result.report, result.skipped);
-    return result;
+      this.handleReport(result.report, result.skipped);
+      return result;
+    } finally {
+      this.syncingNow = false;
+      this.ignoreModifySyncUntil = Date.now() + 1500;
+    }
   }
 
   private handleReport(report: SyncReport, skipped: boolean): void {
     if (skipped && report.skipped) {
-      if (report.reason === "note-delete") {
+      if (report.reason === "note-delete" || report.reason === "note-modify") {
         this.setStatus(`Plex Sync: ${report.skipped}`);
         return;
       }
@@ -444,7 +462,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       return;
     }
 
-    const silentSuccess = report.reason === "note-delete";
+    const silentSuccess = report.reason === "note-delete" || report.reason === "note-modify";
 
     if (report.errors.length > 0) {
       new Notice(
@@ -575,22 +593,33 @@ export default class PlexObsidianSyncPlugin extends Plugin {
         }
 
         const filePath = normalizeVaultPath((file as { path?: string }).path || "");
-        if (!filePath.endsWith(".md")) {
-          return;
-        }
-
-        const notesRoot = normalizeVaultPath(this.settings.notesFolder);
-        const notesPrefix = notesRoot ? `${notesRoot}/` : "";
-        if (!filePath.startsWith(notesPrefix)) {
-          return;
-        }
-
-        const fileName = filePath.split("/").pop() || "";
-        if (fileName.startsWith(".plex-")) {
+        if (!this.isSyncManagedMarkdown(filePath)) {
           return;
         }
 
         this.scheduleDeleteSync();
+      })
+    );
+  }
+
+  private registerModifySyncHook(): void {
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (!this.canScheduleDeleteSync()) {
+          return;
+        }
+
+        const filePath = normalizeVaultPath((file as { path?: string }).path || "");
+        if (!this.isSyncManagedMarkdown(filePath)) {
+          return;
+        }
+
+        if (this.shouldIgnoreModifySync()) {
+          void this.refreshWatchedSignature(filePath);
+          return;
+        }
+
+        void this.handleNoteModify(filePath);
       })
     );
   }
@@ -621,6 +650,84 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       this.deleteSyncTimer = null;
       void this.executeSync("note-delete");
     }, 1200);
+  }
+
+  private scheduleModifySync(): void {
+    if (this.modifySyncTimer !== null) {
+      window.clearTimeout(this.modifySyncTimer);
+    }
+    this.modifySyncTimer = window.setTimeout(() => {
+      this.modifySyncTimer = null;
+      void this.executeSync("note-modify");
+    }, 1200);
+  }
+
+  private async handleNoteModify(filePath: string): Promise<void> {
+    const nextSignature = await this.readWatchedSignature(filePath);
+    if (!nextSignature) {
+      this.watchedSignatureByPath.delete(filePath);
+      return;
+    }
+
+    const previousSignature = this.watchedSignatureByPath.get(filePath);
+    this.watchedSignatureByPath.set(filePath, nextSignature);
+
+    if (previousSignature && previousSignature !== nextSignature) {
+      this.scheduleModifySync();
+    }
+  }
+
+  private async refreshWatchedSignature(filePath: string): Promise<void> {
+    const signature = await this.readWatchedSignature(filePath);
+    if (!signature) {
+      this.watchedSignatureByPath.delete(filePath);
+      return;
+    }
+    this.watchedSignatureByPath.set(filePath, signature);
+  }
+
+  private async seedWatchedSignatures(): Promise<void> {
+    this.watchedSignatureByPath.clear();
+    const files = this.app.vault.getMarkdownFiles();
+    for (const file of files) {
+      const filePath = normalizeVaultPath(file.path);
+      if (!this.isSyncManagedMarkdown(filePath)) {
+        continue;
+      }
+      await this.refreshWatchedSignature(filePath);
+    }
+  }
+
+  private shouldIgnoreModifySync(): boolean {
+    return this.syncingNow || Date.now() < this.ignoreModifySyncUntil;
+  }
+
+  private isSyncManagedMarkdown(filePath: string): boolean {
+    if (!filePath.endsWith(".md")) {
+      return false;
+    }
+
+    const notesRoot = normalizeVaultPath(this.settings.notesFolder);
+    const notesPrefix = notesRoot ? `${notesRoot}/` : "";
+    if (!filePath.startsWith(notesPrefix)) {
+      return false;
+    }
+
+    const fileName = filePath.split("/").pop() || "";
+    if (fileName.startsWith(".plex-")) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private async readWatchedSignature(filePath: string): Promise<string | undefined> {
+    try {
+      const raw = await this.app.vault.adapter.read(filePath);
+      return buildWatchedSignature(raw);
+    } catch {
+      return undefined;
+    }
   }
 
   private canRunSync(reason: string): boolean {
@@ -715,6 +822,91 @@ function writeLocalSecret(key: string, value: string): void {
   } catch {
     // no-op
   }
+}
+
+function buildWatchedSignature(markdown: string): string | undefined {
+  const parsed = matter(markdown);
+  if (!isRecord(parsed.data)) {
+    return undefined;
+  }
+
+  const normalized = normalizeFrontmatterKeys(parsed.data);
+  const ratingKey = asNonEmptyStringValue(normalized.plex_rating_key);
+  const type = asNonEmptyStringValue(normalized.tipo)?.toLowerCase();
+  if (!ratingKey || !type) {
+    return undefined;
+  }
+
+  const supportedType = type === "movie" || type === "show" || type === "season" || type === "episode";
+  if (!supportedType) {
+    return undefined;
+  }
+
+  const watched = parseOptionalBoolValue(normalized.assistido);
+  const watchedValue = typeof watched === "boolean" ? (watched ? "1" : "0") : "u";
+  const checkboxState = type === "season" ? extractSeasonCheckboxSnapshot(parsed.content) : "";
+  return `${type}|${ratingKey}|${watchedValue}|${checkboxState}`;
+}
+
+function normalizeFrontmatterKeys(frontmatter: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = { ...frontmatter };
+  for (const [external, canonical] of Object.entries(PROPERTY_KEY_ALIASES_REVERSE)) {
+    if (!(external in normalized)) {
+      continue;
+    }
+    if (!(canonical in normalized)) {
+      normalized[canonical] = normalized[external];
+    }
+  }
+  return normalized;
+}
+
+function extractSeasonCheckboxSnapshot(body: string): string {
+  const normalized = body.replace(/\r\n/g, "\n");
+  const sectionMatch = normalized.match(
+    /<!-- plex-season-episodes:start -->[\s\S]*?<!-- plex-season-episodes:end -->/
+  );
+  if (!sectionMatch) {
+    return "";
+  }
+
+  const pairs: string[] = [];
+  const lineRegex =
+    /^\s*-\s*\[( |x|X)\][^\n]*<!--\s*plex_episode_rating_key:\s*([^\s>]+)\s*-->\s*$/gm;
+  let match: RegExpExecArray | null;
+  while ((match = lineRegex.exec(sectionMatch[0])) !== null) {
+    const checked = match[1].toLowerCase() === "x" ? "1" : "0";
+    pairs.push(`${match[2]}:${checked}`);
+  }
+
+  return pairs.join(",");
+}
+
+function parseOptionalBoolValue(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "y", "sim", "s"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "n", "nao"].includes(normalized)) {
+      return false;
+    }
+  }
+  return undefined;
+}
+
+function asNonEmptyStringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function sleep(ms: number): Promise<void> {
