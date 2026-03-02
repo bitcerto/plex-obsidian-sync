@@ -23,8 +23,6 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   private logger = new Logger(false);
   private engine?: SyncEngine;
   private statusBar?: HTMLElement;
-  private startupTimer: number | null = null;
-  private intervalTimer: number | null = null;
   private deleteSyncTimer: number | null = null;
   private modifySyncTimer: number | null = null;
   private syncingNow = false;
@@ -53,6 +51,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     this.addSettingTab(new PlexSyncSettingTab(this.app, this));
     this.registerCommands();
     this.registerDeleteSyncHook();
+    this.registerCreateSignatureHook();
     this.registerModifySyncHook();
     await this.seedWatchedSignatures();
     this.scheduleSyncJobs();
@@ -66,12 +65,12 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   }
 
   async saveSettings(): Promise<void> {
-    this.settings.autoSyncEnabled = Boolean(this.settings.autoSyncEnabled);
+    // Legacy settings kept only for backwards compatibility with previous plugin versions.
+    this.settings.autoSyncEnabled = false;
     this.settings.obsidianLocale = detectObsidianLocale();
-    this.settings.syncIntervalSeconds = this.settings.autoSyncEnabled
-      ? ensureMinNumber(this.settings.syncIntervalSeconds, 30)
-      : Math.max(0, Math.floor(Number(this.settings.syncIntervalSeconds) || 0));
-    this.settings.startupDelaySeconds = Math.max(0, Math.floor(this.settings.startupDelaySeconds));
+    this.settings.syncIntervalSeconds = ensureMinNumber(this.settings.syncIntervalSeconds, 30);
+    this.settings.syncOnStartup = false;
+    this.settings.startupDelaySeconds = 0;
     this.settings.lockTtlSeconds = ensureMinNumber(this.settings.lockTtlSeconds, 30);
     this.settings.requestTimeoutSeconds = ensureMinNumber(this.settings.requestTimeoutSeconds, 5);
 
@@ -241,9 +240,9 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       this.settings.serversCache = [];
     }
 
-    if (typeof this.settings.autoSyncEnabled !== "boolean") {
-      this.settings.autoSyncEnabled = false;
-    }
+    this.settings.autoSyncEnabled = false;
+    this.settings.syncOnStartup = false;
+    this.settings.startupDelaySeconds = 0;
     if ((this.settings.frontmatterKeyLanguage as unknown as string) === "auto_plex") {
       this.settings.frontmatterKeyLanguage = "auto_obsidian";
     }
@@ -368,26 +367,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
   private scheduleSyncJobs(): void {
     this.clearScheduledJobs();
-
-    if (!this.settings.autoSyncEnabled) {
-      this.setStatus("Plex Sync: modo manual (Sync Now)");
-      return;
-    }
-
-    if (this.settings.syncOnStartup) {
-      const startupDelay = Math.max(0, Math.floor(this.settings.startupDelaySeconds));
-      this.startupTimer = window.setTimeout(() => {
-        if (!this.canRunSync("startup")) {
-          return;
-        }
-        void this.executeSync("startup");
-      }, startupDelay * 1000);
-    }
-
-    const intervalSec = ensureMinNumber(this.settings.syncIntervalSeconds, 30);
-    this.intervalTimer = window.setInterval(() => {
-      void this.executeSync("interval");
-    }, intervalSec * 1000);
+    this.setStatus("Plex Sync: modo evento (Sync Now + criar/editar/excluir)");
   }
 
   getResolvedFrontmatterLanguageLabel(): string {
@@ -405,16 +385,6 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   }
 
   private clearScheduledJobs(): void {
-    if (this.startupTimer !== null) {
-      window.clearTimeout(this.startupTimer);
-      this.startupTimer = null;
-    }
-
-    if (this.intervalTimer !== null) {
-      window.clearInterval(this.intervalTimer);
-      this.intervalTimer = null;
-    }
-
     if (this.deleteSyncTimer !== null) {
       window.clearTimeout(this.deleteSyncTimer);
       this.deleteSyncTimer = null;
@@ -463,7 +433,11 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
   private handleReport(report: SyncReport, skipped: boolean): void {
     if (skipped && report.skipped) {
-      if (report.reason === "note-delete" || report.reason === "note-modify") {
+      if (
+        report.reason === "note-delete" ||
+        report.reason === "note-modify" ||
+        report.reason === "note-create"
+      ) {
         this.setStatus(`Plex Sync: ${report.skipped}`);
         return;
       }
@@ -472,7 +446,10 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       return;
     }
 
-    const silentSuccess = report.reason === "note-delete" || report.reason === "note-modify";
+    const silentSuccess =
+      report.reason === "note-delete" ||
+      report.reason === "note-modify" ||
+      report.reason === "note-create";
 
     if (report.errors.length > 0) {
       new Notice(
@@ -598,7 +575,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   private registerDeleteSyncHook(): void {
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (!this.canScheduleDeleteSync()) {
+        if (!this.canScheduleEventSync()) {
           return;
         }
 
@@ -607,7 +584,31 @@ export default class PlexObsidianSyncPlugin extends Plugin {
           return;
         }
 
+        this.watchedSignatureByPath.delete(filePath);
+
         this.scheduleDeleteSync();
+      })
+    );
+  }
+
+  private registerCreateSignatureHook(): void {
+    this.registerEvent(
+      this.app.vault.on("create", (file) => {
+        if (!this.canScheduleEventSync()) {
+          return;
+        }
+
+        const filePath = normalizeVaultPath((file as { path?: string }).path || "");
+        if (!this.isSyncManagedMarkdown(filePath)) {
+          return;
+        }
+
+        if (this.shouldIgnoreModifySync()) {
+          void this.refreshWatchedSignature(filePath);
+          return;
+        }
+
+        void this.handleNoteCreate(filePath);
       })
     );
   }
@@ -615,7 +616,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   private registerModifySyncHook(): void {
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (!this.canScheduleDeleteSync()) {
+        if (!this.canScheduleEventSync()) {
           return;
         }
 
@@ -634,7 +635,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     );
   }
 
-  private canScheduleDeleteSync(): boolean {
+  private canScheduleEventSync(): boolean {
     if (this.settings.authMode === "account_only") {
       return this.settings.plexAccountToken.trim().length > 0;
     }
@@ -650,6 +651,49 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       this.settings.plexBaseUrl.trim().length > 0 &&
       this.settings.plexToken.trim().length > 0
     );
+  }
+
+  private async handleNoteCreate(filePath: string): Promise<void> {
+    if (await this.wasReplicatedManagedCreate(filePath)) {
+      await this.refreshWatchedSignature(filePath);
+      return;
+    }
+
+    const signature = await this.readWatchedSignature(filePath);
+    if (!signature) {
+      this.watchedSignatureByPath.delete(filePath);
+      return;
+    }
+
+    this.watchedSignatureByPath.set(filePath, signature);
+
+    const ratingKey = extractRatingKeyFromSignature(signature);
+    if (ratingKey) {
+      this.pendingPreferredObsidianKeys.add(ratingKey);
+      const watched = extractWatchedFromSignature(signature);
+      if (typeof watched === "boolean") {
+        this.pendingPreferredObsidianWatchedByKey.set(ratingKey, watched);
+      }
+    }
+
+    this.scheduleModifySync();
+  }
+
+  private async wasReplicatedManagedCreate(filePath: string): Promise<boolean> {
+    try {
+      const raw = await this.app.vault.adapter.read(filePath);
+      const parsed = matter(raw);
+      if (!isRecord(parsed.data)) {
+        return false;
+      }
+
+      const normalized = normalizeFrontmatterKeys(parsed.data);
+      const syncedAt = asNonEmptyStringValue(normalized.sincronizado_em);
+      const syncedBy = asNonEmptyStringValue(normalized.sincronizado_por);
+      return Boolean(syncedAt || syncedBy);
+    } catch {
+      return false;
+    }
   }
 
   private scheduleDeleteSync(): void {
@@ -688,7 +732,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     const previousSignature = this.watchedSignatureByPath.get(filePath);
     this.watchedSignatureByPath.set(filePath, nextSignature);
 
-    if (previousSignature !== nextSignature) {
+    if (previousSignature && previousSignature !== nextSignature) {
       const ratingKey = extractRatingKeyFromSignature(nextSignature);
       if (ratingKey) {
         this.pendingPreferredObsidianKeys.add(ratingKey);
@@ -760,7 +804,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     }
 
     if (!this.settings.plexAccountToken.trim()) {
-      if (reason === "manual" || reason === "startup") {
+      if (reason === "manual") {
         new Notice("Plex Sync: faça login com a conta Plex para iniciar a sincronização", 6000);
       }
       this.setStatus("Plex Sync: aguardando login Plex");
@@ -771,7 +815,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       this.settings.authMode === "hybrid_account" &&
       !this.settings.selectedServerMachineId.trim()
     ) {
-      if (reason === "manual" || reason === "startup") {
+      if (reason === "manual") {
         new Notice(
           "Plex Sync: nenhum servidor selecionado. Use 'Atualizar servidores' e selecione um servidor.",
           7000

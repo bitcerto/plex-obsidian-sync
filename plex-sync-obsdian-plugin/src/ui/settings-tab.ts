@@ -297,61 +297,10 @@ export class PlexSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Sync automático")
-      .setDesc("Quando desligado, o Plex -> Obsidian roda apenas em 'Sync Now'")
-      .addToggle((toggle) =>
-        toggle.setValue(this.host.settings.autoSyncEnabled).onChange(async (value) => {
-          this.host.settings.autoSyncEnabled = value;
-          await this.host.saveSettings();
-          this.display();
-        })
+      .setName("Modo de sincronização")
+      .setDesc(
+        "Orientado a evento: sincroniza ao criar/editar/excluir notas e no comando 'Plex Sync: Sync Now'. Sem timer automático."
       );
-
-    const autoSyncEnabled = this.host.settings.autoSyncEnabled;
-
-    new Setting(containerEl)
-      .setName("Intervalo de sync (segundos)")
-      .setDesc("Mínimo 30")
-      .addText((text) => {
-        text
-          .setValue(String(this.host.settings.syncIntervalSeconds))
-          .setDisabled(!autoSyncEnabled)
-          .onChange(async (value) => {
-            const parsed = Number(value);
-            this.host.settings.syncIntervalSeconds = Number.isFinite(parsed)
-              ? Math.max(30, Math.floor(parsed))
-              : 60;
-            await this.host.saveSettings();
-          });
-      });
-
-    new Setting(containerEl)
-      .setName("Sync no startup")
-      .addToggle((toggle) => {
-        toggle
-          .setValue(this.host.settings.syncOnStartup)
-          .setDisabled(!autoSyncEnabled)
-          .onChange(async (value) => {
-            this.host.settings.syncOnStartup = value;
-            await this.host.saveSettings();
-          });
-      });
-
-    new Setting(containerEl)
-      .setName("Delay startup (segundos)")
-      .setDesc("Aguardar antes de iniciar o sync inicial")
-      .addText((text) => {
-        text
-          .setValue(String(this.host.settings.startupDelaySeconds))
-          .setDisabled(!autoSyncEnabled)
-          .onChange(async (value) => {
-            const parsed = Number(value);
-            this.host.settings.startupDelaySeconds = Number.isFinite(parsed)
-              ? Math.max(0, Math.floor(parsed))
-              : 15;
-            await this.host.saveSettings();
-          });
-      });
   }
 
   private renderAdvancedSettings(containerEl: HTMLElement): void {

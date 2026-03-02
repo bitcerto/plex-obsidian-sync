@@ -96,9 +96,9 @@ Passos:
    - `latest`: vence o lado com alteracao mais recente.
    - `plex`: Plex vence.
    - `obsidian`: nota vence.
-4. `Sync automatico`:
-   - Desligado: sincroniza apenas no `Sync Now` (exceto gatilho de exclusao de nota).
-   - Ligado: startup + intervalo.
+4. `Modo de sincronizacao`:
+   - O plugin nao usa timer de startup/intervalo.
+   - Sync ocorre por evento (`criar`, `editar`, `excluir` nota) ou manualmente em `Sync Now`.
 
 ## 7) Comandos disponiveis
 
@@ -126,7 +126,14 @@ Passos:
 
 ### 8.3 Exclusao de nota
 
-Ao apagar uma nota dentro da pasta configurada, o plugin agenda sync automatico (debounce de ~1.2s).
+Ao apagar uma nota dentro da pasta configurada, o plugin agenda sync por evento (debounce de ~1.2s).
+
+### 8.4 Eventos que disparam sync
+
+1. Criacao de nota gerenciada em `${notesFolder}`.
+2. Edicao de nota gerenciada (ex.: `assistido`).
+3. Exclusao de nota gerenciada.
+4. Comando manual `Plex Sync: Sync Now`.
 
 Resultado por modo:
 

@@ -7,6 +7,7 @@ Plugin Obsidian para sincronizacao bidirecional com Plex.
 1. `Plex -> Obsidian`: cria e atualiza notas de filmes/series.
 2. `Obsidian -> Plex`: envia alteracoes de status `assistido`.
 3. Funciona em Windows, Linux e Android (com o mesmo vault, por exemplo com LiveSync).
+4. Sync orientado a evento: `Sync Now` e gatilhos de criar/editar/excluir nota (sem timer automatico).
 
 ## Guia de uso completo
 
