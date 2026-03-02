@@ -12,6 +12,7 @@
   "author": "Lucas",
   "license": "MIT",
   "dependencies": {
+    "buffer": "^6.0.3",
     "fast-xml-parser": "^5.4.1",
     "gray-matter": "^4.0.3"
   },

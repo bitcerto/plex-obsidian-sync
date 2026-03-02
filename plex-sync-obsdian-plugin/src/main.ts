@@ -1,3 +1,4 @@
+import "./polyfills/buffer";
 import { Notice, Plugin } from "obsidian";
 import matter from "gray-matter";
 import { DEFAULT_SETTINGS, PLUGIN_ID, PROPERTY_KEY_ALIASES_REVERSE } from "./core/constants";
