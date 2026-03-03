@@ -117,7 +117,8 @@ Passos:
 
 1. Cria notas novas para itens novos.
 2. Atualiza metadados e `assistido`.
-3. Recria nota removida localmente quando o item ainda existe no Plex.
+3. No modo `account_only`, se um item ficar sem `assistido` e sem watchlist na conta, a nota e removida no `Sync Now`.
+4. Pode recriar nota removida localmente quando o item ainda existe e continua ativo no Plex.
 
 ### 8.2 Push (Obsidian -> Plex)
 

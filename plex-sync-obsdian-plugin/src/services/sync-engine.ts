@@ -177,6 +177,18 @@ export class SyncEngine {
           Array.from(this.notePathByRatingKey.keys()),
           removedByDeletedNotes
         );
+        const removedByAccountRules = await this.pruneInactiveAccountItems(
+          settings.notesFolder,
+          items,
+          state
+        );
+        if (removedByAccountRules.size > 0) {
+          for (const ratingKey of removedByAccountRules) {
+            removedByDeletedNotes.add(ratingKey);
+          }
+          items = items.filter((item) => !removedByAccountRules.has(item.ratingKey));
+          report.updatedNotes += removedByAccountRules.size;
+        }
       } else {
         const target = await this.resolvePmsTarget(settings);
         report.resolvedServer = target.serverName;
@@ -483,6 +495,89 @@ export class SyncEngine {
     }
 
     return removed;
+  }
+
+  private async pruneInactiveAccountItems(
+    noteRoot: string,
+    items: PlexMediaItem[],
+    state: SyncStateFile
+  ): Promise<Set<string>> {
+    const removed = new Set<string>();
+
+    for (const item of items) {
+      const watchlisted = parseBool(item.inWatchlist, false);
+      const watched = plexWatched(item);
+      if (watchlisted || watched) {
+        continue;
+      }
+
+      const trackedNotePath =
+        this.notePathByRatingKey.get(item.ratingKey) || state.items[item.ratingKey]?.notePath;
+      const removedAnyNote = await this.removeAccountItemNotes(noteRoot, item.ratingKey, trackedNotePath);
+
+      if (removedAnyNote || state.items[item.ratingKey]) {
+        removed.add(item.ratingKey);
+      }
+      this.notePathByRatingKey.delete(item.ratingKey);
+    }
+
+    return removed;
+  }
+
+  private async removeAccountItemNotes(
+    noteRoot: string,
+    ratingKey: string,
+    trackedRelativePath?: string
+  ): Promise<boolean> {
+    const noteRootNormalized = normalizeVaultPath(noteRoot);
+    const notePrefix = noteRootNormalized ? `${noteRootNormalized}/` : "";
+    const foldersToCleanup = new Set<string>();
+    let removedAny = false;
+
+    if (trackedRelativePath) {
+      const trackedAbsolutePath = normalizeVaultPath(noteRootNormalized, trackedRelativePath);
+      const exists = await this.store.fileExists(trackedAbsolutePath);
+      if (exists) {
+        await this.store.removeAdapterFile(trackedAbsolutePath);
+        removedAny = true;
+        const parent = getParentFolder(trackedRelativePath);
+        if (parent) {
+          foldersToCleanup.add(parent);
+        }
+      }
+    }
+
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const filePath = normalizeVaultPath(file.path);
+      if (!filePath.startsWith(notePrefix)) {
+        continue;
+      }
+
+      const note = await this.store.readNote(filePath);
+      const type = note.frontmatter.tipo;
+      const seriesRatingKey = note.frontmatter.serie_rating_key;
+      if (
+        (type === "season" || type === "episode") &&
+        typeof seriesRatingKey === "string" &&
+        seriesRatingKey === ratingKey
+      ) {
+        await this.store.removeAdapterFile(filePath);
+        removedAny = true;
+        const relativePath = noteRootNormalized
+          ? filePath.slice(noteRootNormalized.length + 1)
+          : filePath;
+        const parent = getParentFolder(relativePath);
+        if (parent) {
+          foldersToCleanup.add(parent);
+        }
+      }
+    }
+
+    for (const folder of foldersToCleanup) {
+      await this.cleanupEmptyFoldersUnder(noteRootNormalized, folder);
+    }
+
+    return removedAny;
   }
 
   private async syncDeletedPmsItems(
