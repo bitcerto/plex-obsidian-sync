@@ -190,8 +190,27 @@ export class SyncEngine {
           this.logger
         );
         client = pmsClient;
+        removedByDeletedNotes = await this.syncDeletedPmsItems(
+          pmsClient,
+          state,
+          report,
+          settings.authMode === "hybrid_account" && settings.plexAccountToken.trim()
+            ? new PlexDiscoverClient(
+                {
+                  accountToken: settings.plexAccountToken,
+                  clientIdentifier: settings.plexClientIdentifier,
+                  product: "Plex Sync",
+                  timeoutSeconds
+                },
+                this.logger
+              )
+            : undefined
+        );
         this.emitStatus("Plex Sync: carregando bibliotecas...");
         items = await this.fetchPlexItems(pmsClient, settings);
+        if (removedByDeletedNotes.size > 0) {
+          items = items.filter((item) => !removedByDeletedNotes.has(item.ratingKey));
+        }
       }
 
       report.totalItems = items.length;
@@ -451,6 +470,69 @@ export class SyncEngine {
         changed = true;
       } catch (error) {
         failures.push(`assistido: ${String(error)}`);
+      }
+
+      if (changed) {
+        removed.add(ratingKey);
+        report.updatedPlex += 1;
+      } else {
+        const message = `Falha ao propagar exclusao da nota ${ratingKey} para o Plex: ${failures.join(" | ")}`;
+        this.logger.error(message);
+        report.errors.push(message);
+      }
+    }
+
+    return removed;
+  }
+
+  private async syncDeletedPmsItems(
+    pmsClient: PmsClient,
+    state: SyncStateFile,
+    report: SyncReport,
+    accountClient?: PlexDiscoverClient
+  ): Promise<Set<string>> {
+    const removed = new Set<string>();
+    const candidates = this.findDeletedNoteCandidates(state);
+    if (candidates.length === 0) {
+      return removed;
+    }
+
+    // Protecao contra remocao em massa acidental por mudanca de pasta/config.
+    if (this.notePathByRatingKey.size === 0 && Object.keys(state.items).length > 0) {
+      const message =
+        "Exclusoes de notas detectadas, mas nenhuma nota Plex foi encontrada no vault atual. Remocao no Plex ignorada para evitar apagamento em massa.";
+      this.logger.warn(message);
+      report.errors.push(message);
+      return removed;
+    }
+
+    this.emitStatus(`Plex Sync: processando ${candidates.length} exclusao(oes) de nota...`);
+
+    for (const ratingKey of candidates) {
+      const failures: string[] = [];
+      let changed = false;
+
+      if (accountClient) {
+        try {
+          await accountClient.setWatchlisted(ratingKey, false);
+          changed = true;
+        } catch (error) {
+          failures.push(`watchlist: ${String(error)}`);
+        }
+
+        try {
+          await accountClient.markWatched(ratingKey, false);
+          changed = true;
+        } catch (error) {
+          failures.push(`assistido-conta: ${String(error)}`);
+        }
+      }
+
+      try {
+        await pmsClient.markWatched(ratingKey, false);
+        changed = true;
+      } catch (error) {
+        failures.push(`assistido-pms: ${String(error)}`);
       }
 
       if (changed) {

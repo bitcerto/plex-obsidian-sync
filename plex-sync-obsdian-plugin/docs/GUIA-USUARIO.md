@@ -138,8 +138,8 @@ Ao apagar uma nota dentro da pasta configurada, o plugin agenda sync por evento 
 Resultado por modo:
 
 1. `account_only`: tenta remover da watchlist e limpar status assistido na conta Plex.
-2. `hybrid_account`: dispara sync, mas nao apaga filme/serie da biblioteca PMS.
-3. `manual`: dispara sync, mas nao apaga filme/serie da biblioteca PMS.
+2. `hybrid_account`: limpa `assistido` no PMS; se houver conta Plex valida, tambem tenta remover da watchlist da conta. Nao apaga filme/serie da biblioteca PMS.
+3. `manual`: limpa `assistido` no PMS. Nao apaga filme/serie da biblioteca PMS.
 
 ## 9) Seguranca
 
