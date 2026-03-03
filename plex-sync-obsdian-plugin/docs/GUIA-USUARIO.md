@@ -16,7 +16,7 @@ Ele sincroniza:
 
 1. Nao remove arquivo fisico de filme/serie no disco.
 2. Nao apaga item da biblioteca do PMS automaticamente.
-3. Nao exige script Python para uso normal do plugin.
+3. Nao exige script externo para uso normal do plugin.
 
 ## 3) Requisitos
 
@@ -195,6 +195,6 @@ Isso e esperado quando o item continua existente no Plex, principalmente nos mod
 1. No plugin: nao.
 2. No PMS: pode apagar somente se a opcao de exclusao de midia estiver habilitada no servidor.
 
-### Preciso do script Python?
+### Preciso de script externo?
 
-Nao para o fluxo principal com plugin. O `sync.py` pode ficar apenas como fallback.
+Nao. O fluxo oficial e somente pelo plugin Obsidian.

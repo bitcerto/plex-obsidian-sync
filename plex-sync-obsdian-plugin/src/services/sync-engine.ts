@@ -571,11 +571,6 @@ export class SyncEngine {
       obsidianWatched = preferredObsidianWatched;
     }
 
-    // Regra do modo conta: item assistido deve permanecer na lista para assistir.
-    if (obsidianWatched) {
-      obsidianWatchlisted = true;
-    }
-
     const hasPrevious = Boolean(previousState);
     const prevPlexWatched = parseBool(previousState?.plexWatched, plexCurrentWatched);
     const prevObsidianWatched = parseBool(previousState?.obsidianWatched, obsidianWatched);
@@ -690,13 +685,6 @@ export class SyncEngine {
         syncSource = "both";
       }
 
-      if (plexCurrentWatched && !plexCurrentWatchlisted) {
-        await client.setWatchlisted!(item.ratingKey, true);
-        plexCurrentWatchlisted = true;
-        obsidianWatchlisted = true;
-        plexUpdated = true;
-        syncSource = mergeSyncSource(syncSource, "obsidian");
-      }
     } else {
       obsidianWatchlisted = plexCurrentWatchlisted;
     }
