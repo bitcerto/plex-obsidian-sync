@@ -16,6 +16,9 @@ const PRODUCT_NAME = "Plex Sync";
 const LOCAL_DEVICE_ID_KEY = "plex-obsidian-sync.local-device-id";
 const LOCAL_ACCOUNT_TOKEN_KEY = "plex-obsidian-sync.account-token";
 const LOCAL_PMS_TOKEN_KEY = "plex-obsidian-sync.pms-token";
+const DELETE_SYNC_DEBOUNCE_MS = 1200;
+const MODIFY_SYNC_DEBOUNCE_MS = 450;
+const MODIFY_IGNORE_AFTER_SYNC_MS = 900;
 
 export default class PlexObsidianSyncPlugin extends Plugin {
   settings: PlexSyncSettings = { ...DEFAULT_SETTINGS };
@@ -34,6 +37,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    this.settings.obsidianLocale = detectObsidianLocale();
 
     this.logger.setDebugEnabled(this.settings.debugLogs);
     this.statusBar = this.addStatusBarItem();
@@ -259,9 +263,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     if (typeof this.settings.plexAccountEmail !== "string") {
       this.settings.plexAccountEmail = "";
     }
-    if (typeof this.settings.obsidianLocale !== "string" || !this.settings.obsidianLocale.trim()) {
-      this.settings.obsidianLocale = detectObsidianLocale();
-    }
+    this.settings.obsidianLocale = detectObsidianLocale();
 
     if (this.settings.notesFolder === "Media/Plex") {
       this.settings.notesFolder = "Media-Plex";
@@ -410,6 +412,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       return null;
     }
 
+    this.settings.obsidianLocale = detectObsidianLocale();
     if (!this.canRunSync(reason)) {
       return null;
     }
@@ -427,7 +430,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       return result;
     } finally {
       this.syncingNow = false;
-      this.ignoreModifySyncUntil = Date.now() + 1500;
+      this.ignoreModifySyncUntil = Date.now() + MODIFY_IGNORE_AFTER_SYNC_MS;
     }
   }
 
@@ -703,7 +706,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     this.deleteSyncTimer = window.setTimeout(() => {
       this.deleteSyncTimer = null;
       void this.executeSync("note-delete");
-    }, 1200);
+    }, DELETE_SYNC_DEBOUNCE_MS);
   }
 
   private scheduleModifySync(): void {
@@ -719,7 +722,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       this.pendingPreferredObsidianKeys.clear();
       this.pendingPreferredObsidianWatchedByKey.clear();
       void this.executeSync("note-modify", false, preferredKeys, preferredWatchedByKey);
-    }, 1200);
+    }, MODIFY_SYNC_DEBOUNCE_MS);
   }
 
   private async handleNoteModify(filePath: string): Promise<void> {

@@ -11,6 +11,7 @@ Ele sincroniza:
 3. Estrutura por pasta:
    - Obsidian em portugues: `Media-Plex/Filmes/...` e `Media-Plex/Series/...`
    - Obsidian em ingles: `Media-Plex/Movies/...` e `Media-Plex/Series/...`
+   - O locale e lido do Obsidian durante o sync (nao depende do locale salvo antigo).
 
 ## 2) O que NAO faz
 
