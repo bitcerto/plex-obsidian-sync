@@ -1181,7 +1181,15 @@ export class SyncEngine {
     }
 
     if (item.type === "show") {
-      const hierarchy = await this.syncShowHierarchy(noteRoot, relativePath, item, client);
+      const showWatchedOverride =
+        obsidianChanged && syncSource !== "plex" ? obsidianWatched : undefined;
+      const hierarchy = await this.syncShowHierarchy(
+        noteRoot,
+        relativePath,
+        item,
+        client,
+        showWatchedOverride
+      );
       if (hierarchy.noteChanged) {
         noteUpdated = true;
       }
@@ -1220,7 +1228,8 @@ export class SyncEngine {
     noteRoot: string,
     showNoteRelativePath: string,
     showItem: PlexMediaItem,
-    client: SyncClient
+    client: SyncClient,
+    showWatchedOverride?: boolean
   ): Promise<ShowHierarchySyncResult> {
     const seasons = showItem.seasons || [];
     if (seasons.length === 0) {
@@ -1248,12 +1257,17 @@ export class SyncEngine {
     );
 
     for (const season of seasons) {
+      const forceFromShow = typeof showWatchedOverride === "boolean";
       const existingSeasonRelative = generatedPathByRatingKey.get(season.ratingKey);
       const existingSeasonNote = existingSeasonRelative
         ? await this.store.readNote(normalizeVaultPath(noteRoot, existingSeasonRelative))
         : emptyNoteData();
-      const checkboxOverrides = parseSeasonCheckboxOverrides(existingSeasonNote.body);
-      const seasonAssistidoOverride = parseOptionalBool(existingSeasonNote.frontmatter.assistido);
+      const checkboxOverrides = forceFromShow
+        ? new Map<string, boolean>()
+        : parseSeasonCheckboxOverrides(existingSeasonNote.body);
+      const seasonAssistidoOverride = forceFromShow
+        ? undefined
+        : parseOptionalBool(existingSeasonNote.frontmatter.assistido);
       const episodeDesiredWatched = new Map<string, boolean>();
 
       for (const episode of season.episodes) {
@@ -1264,13 +1278,21 @@ export class SyncEngine {
           episodeDesiredWatched.set(episode.ratingKey, desiredByCheckbox);
         }
 
-        const existingEpisodeRelative = generatedPathByRatingKey.get(episode.ratingKey);
-        const existingEpisode = existingEpisodeRelative
-          ? await this.store.readNote(normalizeVaultPath(noteRoot, existingEpisodeRelative))
-          : emptyNoteData();
-        const desiredByEpisodeFrontmatter = parseOptionalBool(existingEpisode.frontmatter.assistido);
-        if (typeof desiredByEpisodeFrontmatter === "boolean") {
-          episodeDesiredWatched.set(episode.ratingKey, desiredByEpisodeFrontmatter);
+        if (!forceFromShow) {
+          const existingEpisodeRelative = generatedPathByRatingKey.get(episode.ratingKey);
+          const existingEpisode = existingEpisodeRelative
+            ? await this.store.readNote(normalizeVaultPath(noteRoot, existingEpisodeRelative))
+            : emptyNoteData();
+          const desiredByEpisodeFrontmatter = parseOptionalBool(existingEpisode.frontmatter.assistido);
+          if (typeof desiredByEpisodeFrontmatter === "boolean") {
+            episodeDesiredWatched.set(episode.ratingKey, desiredByEpisodeFrontmatter);
+          }
+        }
+      }
+
+      if (forceFromShow) {
+        for (const episode of season.episodes) {
+          episodeDesiredWatched.set(episode.ratingKey, showWatchedOverride);
         }
       }
 
