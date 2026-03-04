@@ -9,8 +9,8 @@ Ele sincroniza:
 1. Filmes e series para notas Markdown.
 2. Campo `assistido` entre Plex e Obsidian.
 3. Estrutura por pasta:
-   - `Media-Plex/Filmes/...`
-   - `Media-Plex/Series/...`
+   - Obsidian em portugues: `Media-Plex/Filmes/...` e `Media-Plex/Series/...`
+   - Obsidian em ingles: `Media-Plex/Movies/...` e `Media-Plex/Series/...`
 
 ## 2) O que NAO faz
 
@@ -120,6 +120,7 @@ Passos:
 3. No modo `account_only`, se um item ficar sem `assistido` e sem watchlist na conta, a nota e removida no `Sync Now`.
 4. Pode recriar nota removida localmente quando o item ainda existe e continua ativo no Plex.
 5. `Sync Now` roda em modo incremental por padrao (processa apenas itens alterados); `Force Full Rebuild` faz varredura completa.
+6. No modo `account_only`, o historico de assistidos tambem usa janela incremental para reduzir tempo de `Sync Now`.
 
 ### 8.2 Push (Obsidian -> Plex)
 

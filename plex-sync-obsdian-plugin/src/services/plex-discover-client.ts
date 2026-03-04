@@ -91,13 +91,13 @@ export class PlexDiscoverClient {
       "Watchlist"
     );
 
-    return this.enrichMediaItems(listed.items);
+    return listed.items;
   }
 
-  async listWatchedHistory(): Promise<PlexMediaItem[]> {
+  async listWatchedHistory(sinceViewedAt?: number): Promise<PlexMediaItem[]> {
     for (const endpoint of WATCHED_HISTORY_ENDPOINTS) {
       try {
-        const listed = await this.listSectionItems(
+        const listed = await this.listWatchedHistoryItems(
           endpoint,
           {
             type: "99",
@@ -107,14 +107,14 @@ export class PlexDiscoverClient {
             includeExternalMedia: "1"
           },
           "Assistidos",
-          true
+          sinceViewedAt
         );
 
         if (!listed.supported) {
           continue;
         }
 
-        return this.enrichMediaItems(listed.items);
+        return listed.items;
       } catch (error) {
         this.logger.debug("falha ao carregar histórico assistido da conta", {
           endpoint,
@@ -428,8 +428,81 @@ export class PlexDiscoverClient {
     return { supported: true, items };
   }
 
-  private async enrichMediaItems(items: PlexMediaItem[]): Promise<PlexMediaItem[]> {
-    return Promise.all(items.map((item) => this.enrichMediaItem(item)));
+  private async listWatchedHistoryItems(
+    endpoint: string,
+    query: Record<string, string>,
+    libraryTitle: string,
+    sinceViewedAt?: number
+  ): Promise<{ supported: boolean; items: PlexMediaItem[] }> {
+    const rawItems: Record<string, unknown>[] = [];
+    let start = 0;
+    let pageIndex = 0;
+    const hasCutoff = typeof sinceViewedAt === "number" && Number.isFinite(sinceViewedAt);
+    const maxPagesWithCutoff = 3;
+
+    while (true) {
+      const response = await this.requestJson<DiscoverListResponse>(
+        "GET",
+        endpoint,
+        {
+          ...query,
+          "X-Plex-Container-Start": String(start),
+          "X-Plex-Container-Size": String(ACCOUNT_PAGE_SIZE)
+        },
+        true
+      );
+
+      if (!response) {
+        if (start === 0) {
+          return { supported: false, items: [] };
+        }
+        break;
+      }
+
+      const media = response.MediaContainer;
+      const pageNodes = ensureArrayOfRecords(media?.Metadata);
+      rawItems.push(...pageNodes);
+
+      const reportedSize = toNumber(media?.size) ?? pageNodes.length;
+      if (reportedSize <= 0) {
+        break;
+      }
+
+      const pageItems = pageNodes
+        .map((node) => this.toMediaItem(node, libraryTitle))
+        .filter((entry): entry is PlexMediaItem => entry !== undefined);
+      const reachedKnownBoundary =
+        hasCutoff &&
+        pageItems.length > 0 &&
+        pageItems.every((entry) => {
+          const lastViewedAt = typeof entry.lastViewedAt === "number" ? entry.lastViewedAt : 0;
+          return lastViewedAt <= (sinceViewedAt as number);
+        });
+      if (reachedKnownBoundary) {
+        break;
+      }
+
+      pageIndex += 1;
+      if (hasCutoff && pageIndex >= maxPagesWithCutoff) {
+        break;
+      }
+
+      start += reportedSize;
+
+      const reportedTotal = toNumber(media?.totalSize);
+      if (typeof reportedTotal === "number" && start >= reportedTotal) {
+        break;
+      }
+      if (typeof reportedTotal !== "number" && reportedSize < ACCOUNT_PAGE_SIZE) {
+        break;
+      }
+    }
+
+    const items = rawItems
+      .map((node) => this.toMediaItem(node, libraryTitle))
+      .filter((entry): entry is PlexMediaItem => entry !== undefined);
+
+    return { supported: true, items };
   }
 
   private async enrichMediaItem(item: PlexMediaItem): Promise<PlexMediaItem> {

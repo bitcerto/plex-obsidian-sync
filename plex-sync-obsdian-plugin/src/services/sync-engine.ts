@@ -153,6 +153,7 @@ export class SyncEngine {
       const timeoutSeconds = ensureMinNumber(settings.requestTimeoutSeconds, 5);
       let removedByDeletedNotes = new Set<string>();
       let client: SyncClient;
+      let accountClientForDetails: PlexDiscoverClient | undefined;
       let items: PlexMediaItem[] = [];
 
       if (settings.authMode === "account_only") {
@@ -169,6 +170,7 @@ export class SyncEngine {
           this.logger
         );
         client = discoverClient;
+        accountClientForDetails = discoverClient;
         report.resolvedServer = "Conta Plex";
         report.resolvedConnectionUri = "https://discover.provider.plex.tv";
         removedByDeletedNotes = await this.syncDeletedAccountItems(discoverClient, state, report);
@@ -177,7 +179,8 @@ export class SyncEngine {
           discoverClient,
           state,
           Array.from(this.notePathByRatingKey.keys()),
-          removedByDeletedNotes
+          removedByDeletedNotes,
+          options.forceFullRebuild ? 200 : options.reason === "manual" ? 10 : 20
         );
         const removedByAccountRules = await this.pruneInactiveAccountItems(
           settings.notesFolder,
@@ -276,12 +279,16 @@ export class SyncEngine {
       report.totalItems = processQueue.length;
 
       for (let index = 0; index < processQueue.length; index += 1) {
-        const item = processQueue[index];
+        let item = processQueue[index];
         const prev = state.items[item.ratingKey];
 
         try {
           await this.extendLock(settings, lockPath);
           this.emitStatus(`Plex Sync: ${index + 1}/${processQueue.length}`);
+
+          if (accountClientForDetails) {
+            item = await this.enrichAccountItemForSync(accountClientForDetails, item);
+          }
 
           const result = await this.syncSingleItem(
             item,
@@ -434,10 +441,12 @@ export class SyncEngine {
     client: PlexDiscoverClient,
     state: SyncStateFile,
     noteTrackedKeys: string[],
-    excludedKeys: Set<string>
+    excludedKeys: Set<string>,
+    trackedLookupLimit: number
   ): Promise<PlexMediaItem[]> {
     const watchlistItems = await client.listWatchlist();
-    const watchedHistoryItems = await client.listWatchedHistory();
+    const lastKnownViewedAt = this.computeLastKnownViewedAt(state);
+    const watchedHistoryItems = await client.listWatchedHistory(lastKnownViewedAt);
     const dedup = new Map<string, PlexMediaItem>(
       watchlistItems
         .filter((item) => !excludedKeys.has(item.ratingKey))
@@ -459,9 +468,40 @@ export class SyncEngine {
       )
     ).filter((ratingKey) => !dedup.has(ratingKey));
 
-    await this.loadTrackedAccountItemsConcurrently(client, trackedKeys, dedup);
+    const cappedTrackedKeys =
+      trackedLookupLimit > 0 ? trackedKeys.slice(0, trackedLookupLimit) : [];
+
+    await this.loadTrackedAccountItemsConcurrently(client, cappedTrackedKeys, dedup);
 
     return Array.from(dedup.values());
+  }
+
+  private computeLastKnownViewedAt(state: SyncStateFile): number | undefined {
+    let max = 0;
+    for (const item of Object.values(state.items)) {
+      if (typeof item.plexLastViewedAt === "number" && item.plexLastViewedAt > max) {
+        max = item.plexLastViewedAt;
+      }
+    }
+    return max > 0 ? max : undefined;
+  }
+
+  private async enrichAccountItemForSync(
+    client: PlexDiscoverClient,
+    item: PlexMediaItem
+  ): Promise<PlexMediaItem> {
+    try {
+      const detailed = await client.getTrackedItem(item.ratingKey);
+      if (detailed) {
+        return detailed;
+      }
+    } catch (error) {
+      this.logger.debug("falha ao enriquecer item da conta para sync", {
+        ratingKey: item.ratingKey,
+        error: String(error)
+      });
+    }
+    return item;
   }
 
   private async loadTrackedAccountItemsConcurrently(
@@ -892,7 +932,12 @@ export class SyncEngine {
   ): Promise<SyncItemResult> {
     const noteRoot = normalizeVaultPath(settings.notesFolder);
     const previousRelPath = previousState?.notePath;
-    const { absolutePath, relativePath } = await this.resolveNotePath(item, noteRoot, previousRelPath);
+    const { absolutePath, relativePath } = await this.resolveNotePath(
+      item,
+      noteRoot,
+      previousRelPath,
+      settings
+    );
 
     const note = await this.store.readNote(absolutePath);
     const existingMeta = note.frontmatter;
@@ -1601,10 +1646,11 @@ export class SyncEngine {
   private async resolveNotePath(
     item: PlexMediaItem,
     noteRoot: string,
-    previousRelativePath?: string
+    previousRelativePath: string | undefined,
+    settings: PlexSyncSettings
   ): Promise<{ absolutePath: string; relativePath: string }> {
     const { relativePath: canonicalRelativePath, absolutePath: canonicalAbsolutePath } =
-      await this.resolveCanonicalPath(item, noteRoot);
+      await this.resolveCanonicalPath(item, noteRoot, settings);
 
     if (previousRelativePath) {
       const previousAbsolute = normalizeVaultPath(noteRoot, previousRelativePath);
@@ -1657,9 +1703,10 @@ export class SyncEngine {
 
   private async resolveCanonicalPath(
     item: PlexMediaItem,
-    noteRoot: string
+    noteRoot: string,
+    settings: PlexSyncSettings
   ): Promise<{ absolutePath: string; relativePath: string }> {
-    const targetFolder = mediaTypeFolder(item.type);
+    const targetFolder = mediaTypeFolder(item.type, settings.obsidianLocale);
     const baseName = buildPreferredFileBaseName(item);
 
     for (let attempt = 0; attempt < 500; attempt += 1) {
@@ -1899,8 +1946,13 @@ function buildDeviceId(): string {
   return `device-${now}-${rand}`;
 }
 
-function mediaTypeFolder(type: string): string {
-  return type === "show" ? "Series" : "Filmes";
+function mediaTypeFolder(type: string, obsidianLocale: string): string {
+  const locale = (obsidianLocale || "").trim().toLowerCase();
+  const isPortuguese = locale.startsWith("pt");
+  if (type === "show") {
+    return isPortuguese ? "Series" : "Series";
+  }
+  return isPortuguese ? "Filmes" : "Movies";
 }
 
 function buildPreferredFileBaseName(item: PlexMediaItem): string {
