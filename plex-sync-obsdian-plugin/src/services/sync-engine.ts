@@ -1,4 +1,4 @@
-import { App } from "obsidian";
+import { App, TFile } from "obsidian";
 import { MANAGED_KEYS, PROPERTY_KEY_ALIASES_REVERSE, TECH_FILES } from "../core/constants";
 import {
   applyManagedSeriesSection,
@@ -845,7 +845,8 @@ export class SyncEngine {
   private async readNoteFrontmatterFast(path: string): Promise<Record<string, unknown>> {
     const normalized = normalizeVaultPath(path);
     const file = this.app.vault.getAbstractFileByPath(normalized);
-    const cached = file ? this.app.metadataCache.getFileCache(file)?.frontmatter : undefined;
+    const cached =
+      file instanceof TFile ? this.app.metadataCache.getFileCache(file)?.frontmatter : undefined;
     if (isRecord(cached)) {
       return normalizeFrontmatterKeys(cached);
     }
@@ -2144,6 +2145,24 @@ function parseOptionalBool(value: unknown): boolean | undefined {
     }
   }
   return undefined;
+}
+
+function normalizeFrontmatterKeys(frontmatter: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = { ...frontmatter };
+  for (const [external, canonical] of Object.entries(PROPERTY_KEY_ALIASES_REVERSE)) {
+    if (!(external in normalized)) {
+      continue;
+    }
+    if (!(canonical in normalized)) {
+      normalized[canonical] = normalized[external];
+    }
+    delete normalized[external];
+  }
+  return normalized;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function asNonEmptyString(value: unknown): string | undefined {
