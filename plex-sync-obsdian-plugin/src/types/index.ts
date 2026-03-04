@@ -177,6 +177,8 @@ export interface SyncItemState {
   obsidianWatched: boolean;
   plexWatchlisted?: boolean;
   obsidianWatchlisted?: boolean;
+  plexUpdatedAt?: number;
+  plexLastViewedAt?: number;
   lastSyncAt: string;
   lastSyncEpoch: number;
 }

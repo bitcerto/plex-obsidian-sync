@@ -119,6 +119,7 @@ Passos:
 2. Atualiza metadados e `assistido`.
 3. No modo `account_only`, se um item ficar sem `assistido` e sem watchlist na conta, a nota e removida no `Sync Now`.
 4. Pode recriar nota removida localmente quando o item ainda existe e continua ativo no Plex.
+5. `Sync Now` roda em modo incremental por padrao (processa apenas itens alterados); `Force Full Rebuild` faz varredura completa.
 
 ### 8.2 Push (Obsidian -> Plex)
 

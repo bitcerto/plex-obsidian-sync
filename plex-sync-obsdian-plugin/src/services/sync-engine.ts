@@ -1,5 +1,5 @@
 import { App } from "obsidian";
-import { MANAGED_KEYS, TECH_FILES } from "../core/constants";
+import { MANAGED_KEYS, PROPERTY_KEY_ALIASES_REVERSE, TECH_FILES } from "../core/constants";
 import {
   applyManagedSeriesSection,
   buildManagedMetadata,
@@ -81,6 +81,8 @@ export class SyncEngine {
   private deviceId: string;
   private isSyncRunning = false;
   private notePathByRatingKey = new Map<string, string>();
+  private noteObservedWatchedByRatingKey = new Map<string, boolean>();
+  private noteObservedWatchlistedByRatingKey = new Map<string, boolean>();
   private currentLockExpiresAtMs = 0;
 
   constructor(
@@ -225,8 +227,6 @@ export class SyncEngine {
         }
       }
 
-      report.totalItems = items.length;
-
       const nextItems: Record<string, SyncItemState> = {};
       const preferredObsidianKeys = new Set<string>(
         Array.isArray(options.preferredObsidianKeys)
@@ -244,13 +244,44 @@ export class SyncEngine {
           : []
       );
 
-      for (let index = 0; index < items.length; index += 1) {
-        const item = items[index];
+      const processQueue: PlexMediaItem[] = [];
+      const forceFullRebuild = options.forceFullRebuild === true;
+      for (const item of items) {
+        const prev = state.items[item.ratingKey];
+        const currentNotePath = this.notePathByRatingKey.get(item.ratingKey);
+        const preferObsidianWhenStateMissing = preferredObsidianKeys.has(item.ratingKey);
+        const preferredObsidianWatched = preferredObsidianWatchedByKey.get(item.ratingKey);
+
+        const shouldProcess = this.shouldProcessIncrementally(
+          item,
+          prev,
+          currentNotePath,
+          preferObsidianWhenStateMissing,
+          preferredObsidianWatched,
+          forceFullRebuild
+        );
+        if (shouldProcess) {
+          processQueue.push(item);
+          continue;
+        }
+
+        if (prev) {
+          nextItems[item.ratingKey] = {
+            ...prev,
+            notePath: currentNotePath || prev.notePath
+          };
+        }
+      }
+
+      report.totalItems = processQueue.length;
+
+      for (let index = 0; index < processQueue.length; index += 1) {
+        const item = processQueue[index];
         const prev = state.items[item.ratingKey];
 
         try {
           await this.extendLock(settings, lockPath);
-          this.emitStatus(`Plex Sync: ${index + 1}/${items.length}`);
+          this.emitStatus(`Plex Sync: ${index + 1}/${processQueue.length}`);
 
           const result = await this.syncSingleItem(
             item,
@@ -316,6 +347,8 @@ export class SyncEngine {
       this.emitStatus("Plex Sync: idle");
       this.isSyncRunning = false;
       this.notePathByRatingKey.clear();
+      this.noteObservedWatchedByRatingKey.clear();
+      this.noteObservedWatchlistedByRatingKey.clear();
     }
   }
 
@@ -420,28 +453,133 @@ export class SyncEngine {
       }
     }
 
-    const trackedKeys = new Set<string>(
-      [...Object.keys(state.items), ...noteTrackedKeys].filter((ratingKey) => !excludedKeys.has(ratingKey))
-    );
-    for (const ratingKey of trackedKeys) {
-      if (dedup.has(ratingKey)) {
-        continue;
-      }
+    const trackedKeys = Array.from(
+      new Set<string>(
+        [...Object.keys(state.items), ...noteTrackedKeys].filter((ratingKey) => !excludedKeys.has(ratingKey))
+      )
+    ).filter((ratingKey) => !dedup.has(ratingKey));
 
-      try {
-        const tracked = await client.getTrackedItem(ratingKey);
-        if (tracked) {
-          dedup.set(ratingKey, tracked);
+    await this.loadTrackedAccountItemsConcurrently(client, trackedKeys, dedup);
+
+    return Array.from(dedup.values());
+  }
+
+  private async loadTrackedAccountItemsConcurrently(
+    client: PlexDiscoverClient,
+    ratingKeys: string[],
+    dedup: Map<string, PlexMediaItem>
+  ): Promise<void> {
+    if (ratingKeys.length === 0) {
+      return;
+    }
+
+    const concurrency = Math.min(8, ratingKeys.length);
+    let index = 0;
+
+    const workers = Array.from({ length: concurrency }).map(async () => {
+      while (true) {
+        const current = index;
+        index += 1;
+        if (current >= ratingKeys.length) {
+          break;
         }
-      } catch (error) {
-        this.logger.debug("falha ao carregar item rastreado da conta", {
-          ratingKey,
-          error: String(error)
-        });
+        const ratingKey = ratingKeys[current];
+        try {
+          const tracked = await client.getTrackedItem(ratingKey);
+          if (tracked) {
+            dedup.set(ratingKey, tracked);
+          }
+        } catch (error) {
+          this.logger.debug("falha ao carregar item rastreado da conta", {
+            ratingKey,
+            error: String(error)
+          });
+        }
+      }
+    });
+
+    await Promise.all(workers);
+  }
+
+  private shouldProcessIncrementally(
+    item: PlexMediaItem,
+    previousState: SyncItemState | undefined,
+    currentNotePath: string | undefined,
+    preferObsidianWhenStateMissing: boolean,
+    preferredObsidianWatched: boolean | undefined,
+    forceFullRebuild: boolean
+  ): boolean {
+    if (forceFullRebuild) {
+      return true;
+    }
+
+    if (!previousState) {
+      return true;
+    }
+
+    if (preferObsidianWhenStateMissing || typeof preferredObsidianWatched === "boolean") {
+      return true;
+    }
+
+    if (!currentNotePath) {
+      return true;
+    }
+
+    if (previousState.notePath && previousState.notePath !== currentNotePath) {
+      return true;
+    }
+
+    const currentPlexWatched = plexWatched(item);
+    const prevPlexWatched = parseBool(previousState.plexWatched, currentPlexWatched);
+    if (currentPlexWatched !== prevPlexWatched) {
+      return true;
+    }
+
+    if (typeof item.inWatchlist === "boolean") {
+      const prevPlexWatchlisted = parseBool(previousState.plexWatchlisted, item.inWatchlist);
+      if (item.inWatchlist !== prevPlexWatchlisted) {
+        return true;
       }
     }
 
-    return Array.from(dedup.values());
+    const observedObsidianWatched = this.noteObservedWatchedByRatingKey.get(item.ratingKey);
+    if (typeof observedObsidianWatched === "boolean") {
+      const prevObsidianWatched = parseBool(previousState.obsidianWatched, observedObsidianWatched);
+      if (observedObsidianWatched !== prevObsidianWatched) {
+        return true;
+      }
+    }
+
+    const observedObsidianWatchlisted = this.noteObservedWatchlistedByRatingKey.get(item.ratingKey);
+    if (typeof observedObsidianWatchlisted === "boolean") {
+      const prevObsidianWatchlisted = parseBool(
+        previousState.obsidianWatchlisted,
+        observedObsidianWatchlisted
+      );
+      if (observedObsidianWatchlisted !== prevObsidianWatchlisted) {
+        return true;
+      }
+    }
+
+    if (typeof item.updatedAt === "number") {
+      if (
+        typeof previousState.plexUpdatedAt !== "number" ||
+        previousState.plexUpdatedAt !== item.updatedAt
+      ) {
+        return true;
+      }
+    }
+
+    if (typeof item.lastViewedAt === "number") {
+      if (
+        typeof previousState.plexLastViewedAt !== "number" ||
+        previousState.plexLastViewedAt !== item.lastViewedAt
+      ) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private async syncDeletedAccountItems(
@@ -553,9 +691,9 @@ export class SyncEngine {
         continue;
       }
 
-      const note = await this.store.readNote(filePath);
-      const type = note.frontmatter.tipo;
-      const seriesRatingKey = note.frontmatter.serie_rating_key;
+      const noteFrontmatter = await this.readNoteFrontmatterFast(filePath);
+      const type = noteFrontmatter.tipo;
+      const seriesRatingKey = noteFrontmatter.serie_rating_key;
       if (
         (type === "season" || type === "episode") &&
         typeof seriesRatingKey === "string" &&
@@ -663,6 +801,8 @@ export class SyncEngine {
     const root = normalizeVaultPath(noteRoot);
     const rootPrefix = root.length > 0 ? `${root}/` : "";
     const mapping = new Map<string, string>();
+    const observedWatchedByRatingKey = new Map<string, boolean>();
+    const observedWatchlistedByRatingKey = new Map<string, boolean>();
 
     const files = this.app.vault.getMarkdownFiles();
     for (const file of files) {
@@ -671,21 +811,46 @@ export class SyncEngine {
         continue;
       }
 
-      const note = await this.store.readNote(filePath);
-      const ratingKey = note.frontmatter.plex_rating_key;
+      const noteFrontmatter = await this.readNoteFrontmatterFast(filePath);
+      const ratingKey = noteFrontmatter.plex_rating_key;
       if (typeof ratingKey !== "string" || ratingKey.trim().length === 0) {
         continue;
       }
-      const noteType = note.frontmatter.tipo;
+      const noteType = noteFrontmatter.tipo;
       if (typeof noteType === "string" && noteType !== "movie" && noteType !== "show") {
         continue;
       }
 
       const relativePath = filePath.slice(rootPrefix.length);
-      mapping.set(ratingKey.trim(), relativePath);
+      const normalizedRatingKey = ratingKey.trim();
+      mapping.set(normalizedRatingKey, relativePath);
+      observedWatchedByRatingKey.set(
+        normalizedRatingKey,
+        parseBool(noteFrontmatter.assistido, false)
+      );
+      observedWatchlistedByRatingKey.set(
+        normalizedRatingKey,
+        parseBool(
+          noteFrontmatter.na_lista_para_assistir ?? noteFrontmatter.na_watchlist,
+          false
+        )
+      );
     }
 
+    this.noteObservedWatchedByRatingKey = observedWatchedByRatingKey;
+    this.noteObservedWatchlistedByRatingKey = observedWatchlistedByRatingKey;
     return mapping;
+  }
+
+  private async readNoteFrontmatterFast(path: string): Promise<Record<string, unknown>> {
+    const normalized = normalizeVaultPath(path);
+    const file = this.app.vault.getAbstractFileByPath(normalized);
+    const cached = file ? this.app.metadataCache.getFileCache(file)?.frontmatter : undefined;
+    if (isRecord(cached)) {
+      return normalizeFrontmatterKeys(cached);
+    }
+    const note = await this.store.readNote(normalized);
+    return note.frontmatter;
   }
 
   private pickTargetSections(sections: PlexSection[], settings: PlexSyncSettings): PlexSection[] {
@@ -926,6 +1091,8 @@ export class SyncEngine {
       obsidianWatched: watchedForState,
       plexWatchlisted: supportsWatchlist ? plexCurrentWatchlisted : undefined,
       obsidianWatchlisted: supportsWatchlist ? watchlistedForState : undefined,
+      plexUpdatedAt: item.updatedAt,
+      plexLastViewedAt: item.lastViewedAt,
       lastSyncAt: nowIso(),
       lastSyncEpoch: Date.now()
     };
