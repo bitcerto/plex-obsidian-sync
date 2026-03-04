@@ -150,6 +150,8 @@ export class SyncEngine {
       const fallbackStatePath =
         legacyStatePath !== statePath ? legacyStatePath : undefined;
       const state = await this.loadState(statePath, fallbackStatePath);
+      const targetRatingKeys = normalizeRatingKeys(options.targetRatingKeys);
+      const deletedRatingKeys = normalizeRatingKeys(options.deletedRatingKeys);
       const timeoutSeconds = ensureMinNumber(settings.requestTimeoutSeconds, 5);
       let removedByDeletedNotes = new Set<string>();
       let client: SyncClient;
@@ -173,15 +175,29 @@ export class SyncEngine {
         accountClientForDetails = discoverClient;
         report.resolvedServer = "Conta Plex";
         report.resolvedConnectionUri = "https://discover.provider.plex.tv";
-        removedByDeletedNotes = await this.syncDeletedAccountItems(discoverClient, state, report);
-        this.emitStatus("Plex Sync: carregando watchlist e histórico assistido da conta...");
-        items = await this.fetchAccountItems(
+        removedByDeletedNotes = await this.syncDeletedAccountItems(
           discoverClient,
           state,
-          Array.from(this.notePathByRatingKey.keys()),
-          removedByDeletedNotes,
-          options.forceFullRebuild ? 200 : options.reason === "manual" ? 10 : 20
+          report,
+          deletedRatingKeys
         );
+        if (targetRatingKeys.size > 0 && !options.forceFullRebuild) {
+          this.emitStatus(`Plex Sync: carregando ${targetRatingKeys.size} item(ns) alvo...`);
+          items = await this.fetchTargetAccountItems(
+            discoverClient,
+            Array.from(targetRatingKeys),
+            removedByDeletedNotes
+          );
+        } else {
+          this.emitStatus("Plex Sync: carregando watchlist e histórico assistido da conta...");
+          items = await this.fetchAccountItems(
+            discoverClient,
+            state,
+            Array.from(this.notePathByRatingKey.keys()),
+            removedByDeletedNotes,
+            options.forceFullRebuild ? 200 : options.reason === "manual" ? 10 : 20
+          );
+        }
         const removedByAccountRules = await this.pruneInactiveAccountItems(
           settings.notesFolder,
           items,
@@ -211,6 +227,7 @@ export class SyncEngine {
           pmsClient,
           state,
           report,
+          deletedRatingKeys,
           settings.authMode === "hybrid_account" && settings.plexAccountToken.trim()
             ? new PlexDiscoverClient(
                 {
@@ -476,6 +493,30 @@ export class SyncEngine {
     return Array.from(dedup.values());
   }
 
+  private async fetchTargetAccountItems(
+    client: PlexDiscoverClient,
+    ratingKeys: string[],
+    excludedKeys: Set<string>
+  ): Promise<PlexMediaItem[]> {
+    const cleaned = Array.from(
+      new Set<string>(
+        ratingKeys
+          .filter((entry) => typeof entry === "string")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0 && !excludedKeys.has(entry))
+      )
+    );
+    if (cleaned.length === 0) {
+      return [];
+    }
+
+    const dedup = new Map<string, PlexMediaItem>();
+    await this.loadTrackedAccountItemsConcurrently(client, cleaned, dedup);
+    return cleaned
+      .map((ratingKey) => dedup.get(ratingKey))
+      .filter((item): item is PlexMediaItem => Boolean(item));
+  }
+
   private computeLastKnownViewedAt(state: SyncStateFile): number | undefined {
     let max = 0;
     for (const item of Object.values(state.items)) {
@@ -625,10 +666,11 @@ export class SyncEngine {
   private async syncDeletedAccountItems(
     client: PlexDiscoverClient,
     state: SyncStateFile,
-    report: SyncReport
+    report: SyncReport,
+    explicitDeletedRatingKeys?: Set<string>
   ): Promise<Set<string>> {
     const removed = new Set<string>();
-    const candidates = this.findDeletedNoteCandidates(state);
+    const candidates = this.findDeletedNoteCandidates(state, explicitDeletedRatingKeys);
     if (candidates.length === 0) {
       return removed;
     }
@@ -762,10 +804,11 @@ export class SyncEngine {
     pmsClient: PmsClient,
     state: SyncStateFile,
     report: SyncReport,
+    explicitDeletedRatingKeys?: Set<string>,
     accountClient?: PlexDiscoverClient
   ): Promise<Set<string>> {
     const removed = new Set<string>();
-    const candidates = this.findDeletedNoteCandidates(state);
+    const candidates = this.findDeletedNoteCandidates(state, explicitDeletedRatingKeys);
     if (candidates.length === 0) {
       return removed;
     }
@@ -821,8 +864,12 @@ export class SyncEngine {
     return removed;
   }
 
-  private findDeletedNoteCandidates(state: SyncStateFile): string[] {
+  private findDeletedNoteCandidates(
+    state: SyncStateFile,
+    explicitDeletedRatingKeys?: Set<string>
+  ): string[] {
     const deleted: string[] = [];
+    const seen = new Set<string>();
 
     for (const [ratingKey, itemState] of Object.entries(state.items)) {
       if (!itemState.notePath) {
@@ -831,7 +878,24 @@ export class SyncEngine {
       if (this.notePathByRatingKey.has(ratingKey)) {
         continue;
       }
+      if (seen.has(ratingKey)) {
+        continue;
+      }
       deleted.push(ratingKey);
+      seen.add(ratingKey);
+    }
+
+    if (explicitDeletedRatingKeys && explicitDeletedRatingKeys.size > 0) {
+      for (const ratingKey of explicitDeletedRatingKeys) {
+        if (this.notePathByRatingKey.has(ratingKey)) {
+          continue;
+        }
+        if (seen.has(ratingKey)) {
+          continue;
+        }
+        deleted.push(ratingKey);
+        seen.add(ratingKey);
+      }
     }
 
     return deleted;
@@ -2197,6 +2261,18 @@ function parseOptionalBool(value: unknown): boolean | undefined {
     }
   }
   return undefined;
+}
+
+function normalizeRatingKeys(values?: string[]): Set<string> {
+  if (!Array.isArray(values)) {
+    return new Set<string>();
+  }
+  return new Set<string>(
+    values
+      .filter((value) => typeof value === "string")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+  );
 }
 
 function normalizeFrontmatterKeys(frontmatter: Record<string, unknown>): Record<string, unknown> {

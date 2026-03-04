@@ -217,6 +217,8 @@ export interface SyncOptions {
   forceFullRebuild?: boolean;
   preferredObsidianKeys?: string[];
   preferredObsidianWatchedByKey?: Record<string, boolean>;
+  targetRatingKeys?: string[];
+  deletedRatingKeys?: string[];
 }
 
 export interface SyncExecutionResult {

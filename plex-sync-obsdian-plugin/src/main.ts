@@ -33,6 +33,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   private watchedSignatureByPath = new Map<string, string>();
   private pendingPreferredObsidianKeys = new Set<string>();
   private pendingPreferredObsidianWatchedByKey = new Map<string, boolean>();
+  private pendingDeletedRatingKeys = new Set<string>();
   private loginInProgress = false;
 
   async onload(): Promise<void> {
@@ -402,7 +403,9 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     reason: string,
     forceFullRebuild = false,
     preferredObsidianKeys?: string[],
-    preferredObsidianWatchedByKey?: Record<string, boolean>
+    preferredObsidianWatchedByKey?: Record<string, boolean>,
+    targetRatingKeys?: string[],
+    deletedRatingKeys?: string[]
   ): Promise<{
     report: SyncReport;
     skipped: boolean;
@@ -423,7 +426,9 @@ export default class PlexObsidianSyncPlugin extends Plugin {
         reason,
         forceFullRebuild,
         preferredObsidianKeys,
-        preferredObsidianWatchedByKey
+        preferredObsidianWatchedByKey,
+        targetRatingKeys,
+        deletedRatingKeys
       });
 
       this.handleReport(result.report, result.skipped);
@@ -509,15 +514,46 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       search: async (query) => client.searchCatalog(query, 20),
       addToWatchlist: async (item: PlexDiscoverSearchItem) => {
         await client.setWatchlisted(item.ratingKey, true);
-        const syncResult = await this.executeSync("search-add");
+        const targetKeys = [item.ratingKey];
+        const syncResult = await this.executeSync(
+          "search-add",
+          false,
+          undefined,
+          undefined,
+          targetKeys
+        );
         if (
           syncResult?.skipped &&
           syncResult.report.skipped?.startsWith("lock mantido por")
         ) {
           new Notice("Adicionado no Plex. Sync local será tentado novamente em 3s.", 5000);
           window.setTimeout(() => {
-            void this.executeSync("search-add-retry");
+            void this.executeSync(
+              "search-add-retry",
+              false,
+              undefined,
+              undefined,
+              targetKeys
+            );
           }, 3000);
+          return;
+        }
+
+        if (
+          syncResult &&
+          !syncResult.skipped &&
+          syncResult.report.errors.length === 0 &&
+          syncResult.report.totalItems === 0
+        ) {
+          window.setTimeout(() => {
+            void this.executeSync(
+              "search-add-reconcile",
+              false,
+              undefined,
+              undefined,
+              targetKeys
+            );
+          }, 1500);
         }
       }
     }).open();
@@ -587,6 +623,11 @@ export default class PlexObsidianSyncPlugin extends Plugin {
           return;
         }
 
+        const previousSignature = this.watchedSignatureByPath.get(filePath);
+        const ratingKey = previousSignature ? extractRatingKeyFromSignature(previousSignature) : undefined;
+        if (ratingKey) {
+          this.pendingDeletedRatingKeys.add(ratingKey);
+        }
         this.watchedSignatureByPath.delete(filePath);
 
         this.scheduleDeleteSync();
@@ -705,7 +746,9 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     }
     this.deleteSyncTimer = window.setTimeout(() => {
       this.deleteSyncTimer = null;
-      void this.executeSync("note-delete");
+      const deletedKeys = Array.from(this.pendingDeletedRatingKeys);
+      this.pendingDeletedRatingKeys.clear();
+      void this.executeSync("note-delete", false, undefined, undefined, undefined, deletedKeys);
     }, DELETE_SYNC_DEBOUNCE_MS);
   }
 
@@ -721,7 +764,13 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       );
       this.pendingPreferredObsidianKeys.clear();
       this.pendingPreferredObsidianWatchedByKey.clear();
-      void this.executeSync("note-modify", false, preferredKeys, preferredWatchedByKey);
+      void this.executeSync(
+        "note-modify",
+        false,
+        preferredKeys,
+        preferredWatchedByKey,
+        preferredKeys
+      );
     }, MODIFY_SYNC_DEBOUNCE_MS);
   }
 
