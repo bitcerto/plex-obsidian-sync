@@ -4,7 +4,7 @@
   "version": "0.3.3",
   "minAppVersion": "1.5.0",
   "description": "Bidirectional Plex sync for watched status and media notes.",
-  "author": "Lucas",
-  "authorUrl": "",
+  "author": "bitcerto",
+  "authorUrl": "https://github.com/bitcerto",
   "isDesktopOnly": false
 }
