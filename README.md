@@ -1,11 +1,21 @@
-# Plex Sync
+# Plex Sync Plugin
 
-Projeto do plugin Obsidian para sincronizacao bidirecional com Plex.
+Plugin Obsidian para sincronizacao bidirecional com Plex.
 
-## Estrutura
+## O que faz
 
-1. Plugin: `plex-sync-obsdian-plugin/`
-2. Guia principal: `plex-sync-obsdian-plugin/docs/GUIA-USUARIO.md`
+1. `Plex -> Obsidian`: cria e atualiza notas de filmes/series.
+2. `Obsidian -> Plex`: envia alteracoes de status `assistido`.
+3. Funciona em Windows, Linux e Android (com o mesmo vault, por exemplo com LiveSync).
+4. Sync orientado a evento: `Sync Now` e gatilhos de criar/editar/excluir nota (sem timer automatico).
+
+## Guia de uso completo
+
+Leia o guia detalhado em:
+
+- `docs/GUIA-USUARIO.md`
+
+Esse guia cobre instalacao, configuracao por modo, comandos, sincronizacao, seguranca e troubleshooting.
 
 ## Build rapido
 
@@ -17,7 +27,7 @@ npm run test
 npm run build
 ```
 
-## Instalar no vault do Obsidian
+## Instalacao manual no Obsidian
 
 ```bash
 mkdir -p "/caminho/do/vault/.obsidian/plugins/plex-obsidian-sync"
@@ -29,6 +39,8 @@ Depois no Obsidian:
 1. `Settings -> Community plugins -> Reload plugins`
 2. Ative `Plex Sync`
 
-## Observacao
+## Desenvolvimento
 
-O caminho oficial deste repositorio e o plugin Obsidian.
+```bash
+npm run dev
+```
