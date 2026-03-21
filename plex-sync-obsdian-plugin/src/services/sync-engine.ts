@@ -1,5 +1,23 @@
-import { App, TFile } from "obsidian";
-import { MANAGED_KEYS, PROPERTY_KEY_ALIASES_REVERSE, TECH_FILES } from "../core/constants";
+import { App } from "obsidian";
+import { TECH_FILES } from "../core/constants";
+import { syncShowHierarchy } from "./show-hierarchy-sync";
+import {
+  pruneInactiveAccountItems,
+  syncDeletedAccountItems,
+  syncDeletedPmsItems
+} from "./sync-deletion-reconciliation";
+import {
+  enrichAccountItemForSync,
+  fetchAccountItems,
+  fetchTargetAccountItems,
+  shouldProcessIncrementally
+} from "./sync-item-selection";
+import {
+  readNoteFrontmatterFast,
+  resolveNotePath,
+  scanManagedNoteIndex
+} from "./sync-note-paths";
+import { fetchPlexItems, resolvePmsTarget } from "./sync-pms-source";
 import {
   applyManagedSeriesSection,
   buildManagedMetadata,
@@ -10,10 +28,6 @@ import {
 } from "../core/sync-core";
 import { evaluateLock } from "../core/lock-core";
 import {
-  orderConnections,
-  tokenCandidates
-} from "../core/plex-account-core";
-import {
   ensureMinNumber,
   isOnline,
   normalizeVaultPath,
@@ -23,9 +37,7 @@ import {
 } from "../core/utils";
 import type {
   PlexMediaItem,
-  NoteData,
   PlexSeasonInfo,
-  PlexSection,
   PlexSyncSettings,
   SyncExecutionResult,
   SyncItemState,
@@ -53,18 +65,6 @@ interface SyncItemResult {
   conflict: boolean;
 }
 
-interface ShowHierarchySyncResult {
-  noteChanged: boolean;
-  plexUpdated: boolean;
-}
-
-interface ResolvedPmsTarget {
-  baseUrl: string;
-  token: string;
-  serverName?: string;
-  machineId?: string;
-  connectionUri?: string;
-}
 
 interface SyncClient {
   markWatched(ratingKey: string, watched: boolean): Promise<void>;
@@ -139,7 +139,14 @@ export class SyncEngine {
       lockAcquired = true;
       await this.store.ensureFolder(settings.notesFolder);
       await this.writeServersCache();
-      this.notePathByRatingKey = await this.scanNotePathsByRatingKey(settings.notesFolder);
+      const noteIndex = await scanManagedNoteIndex({
+        app: this.app,
+        store: this.store,
+        noteRoot: settings.notesFolder
+      });
+      this.notePathByRatingKey = noteIndex.mapping;
+      this.noteObservedWatchedByRatingKey = noteIndex.observedWatchedByRatingKey;
+      this.noteObservedWatchlistedByRatingKey = noteIndex.observedWatchlistedByRatingKey;
 
       const statePath = this.getStatePath(settings);
       const legacyStatePath = this.getLegacyStatePath(settings);
@@ -175,34 +182,49 @@ export class SyncEngine {
         accountClientForDetails = discoverClient;
         report.resolvedServer = "Conta Plex";
         report.resolvedConnectionUri = "https://discover.provider.plex.tv";
-        removedByDeletedNotes = await this.syncDeletedAccountItems(
-          discoverClient,
+        removedByDeletedNotes = await syncDeletedAccountItems({
+          client: discoverClient,
           state,
           report,
-          deletedRatingKeys
-        );
+          explicitDeletedRatingKeys: deletedRatingKeys,
+          context: {
+            logger: this.logger,
+            notePathByRatingKey: this.notePathByRatingKey
+          },
+          emitStatus: (text) => this.emitStatus(text)
+        });
         if (targetRatingKeys.size > 0 && !options.forceFullRebuild) {
           this.emitStatus(`Plex Sync: carregando ${targetRatingKeys.size} item(ns) alvo...`);
-          items = await this.fetchTargetAccountItems(
-            discoverClient,
-            Array.from(targetRatingKeys),
-            removedByDeletedNotes
-          );
+          items = await fetchTargetAccountItems({
+            client: discoverClient,
+            ratingKeys: Array.from(targetRatingKeys),
+            excludedKeys: removedByDeletedNotes,
+            logger: this.logger
+          });
         } else {
           this.emitStatus("Plex Sync: carregando watchlist e histórico assistido da conta...");
-          items = await this.fetchAccountItems(
-            discoverClient,
+          items = await fetchAccountItems({
+            client: discoverClient,
             state,
-            Array.from(this.notePathByRatingKey.keys()),
-            removedByDeletedNotes,
-            options.forceFullRebuild ? 200 : options.reason === "manual" ? 10 : 20
-          );
+            noteTrackedKeys: Array.from(this.notePathByRatingKey.keys()),
+            excludedKeys: removedByDeletedNotes,
+            trackedLookupLimit: options.forceFullRebuild ? 200 : options.reason === "manual" ? 10 : 20,
+            logger: this.logger
+          });
         }
-        const removedByAccountRules = await this.pruneInactiveAccountItems(
-          settings.notesFolder,
+        const removedByAccountRules = await pruneInactiveAccountItems({
+          noteRoot: settings.notesFolder,
           items,
-          state
-        );
+          state,
+          context: {
+            app: this.app,
+            logger: this.logger,
+            notePathByRatingKey: this.notePathByRatingKey,
+            readNoteFrontmatterFast: (path) => readNoteFrontmatterFast(this.app, this.store, path),
+            removeAdapterFile: (path) => this.store.removeAdapterFile(path),
+            fileExists: (path) => this.store.fileExists(path)
+          }
+        });
         if (removedByAccountRules.size > 0) {
           for (const ratingKey of removedByAccountRules) {
             removedByDeletedNotes.add(ratingKey);
@@ -211,7 +233,10 @@ export class SyncEngine {
           report.updatedNotes += removedByAccountRules.size;
         }
       } else {
-        const target = await this.resolvePmsTarget(settings);
+        const target = await resolvePmsTarget({
+          settings,
+          logger: this.logger
+        });
         report.resolvedServer = target.serverName;
         report.resolvedConnectionUri = target.connectionUri || target.baseUrl;
         const pmsClient = new PmsClient(
@@ -223,25 +248,35 @@ export class SyncEngine {
           this.logger
         );
         client = pmsClient;
-        removedByDeletedNotes = await this.syncDeletedPmsItems(
+        removedByDeletedNotes = await syncDeletedPmsItems({
           pmsClient,
           state,
           report,
-          deletedRatingKeys,
-          settings.authMode === "hybrid_account" && settings.plexAccountToken.trim()
-            ? new PlexDiscoverClient(
-                {
-                  accountToken: settings.plexAccountToken,
-                  clientIdentifier: settings.plexClientIdentifier,
-                  product: "Plex Sync",
-                  timeoutSeconds
-                },
-                this.logger
-              )
-            : undefined
-        );
+          explicitDeletedRatingKeys: deletedRatingKeys,
+          accountClient:
+            settings.authMode === "hybrid_account" && settings.plexAccountToken.trim()
+              ? new PlexDiscoverClient(
+                  {
+                    accountToken: settings.plexAccountToken,
+                    clientIdentifier: settings.plexClientIdentifier,
+                    product: "Plex Sync",
+                    timeoutSeconds
+                  },
+                  this.logger
+                )
+              : undefined,
+          context: {
+            logger: this.logger,
+            notePathByRatingKey: this.notePathByRatingKey
+          },
+          emitStatus: (text) => this.emitStatus(text)
+        });
         this.emitStatus("Plex Sync: carregando bibliotecas...");
-        items = await this.fetchPlexItems(pmsClient, settings);
+        items = await fetchPlexItems({
+          client: pmsClient,
+          settings,
+          logger: this.logger
+        });
         if (removedByDeletedNotes.size > 0) {
           items = items.filter((item) => !removedByDeletedNotes.has(item.ratingKey));
         }
@@ -272,14 +307,16 @@ export class SyncEngine {
         const preferObsidianWhenStateMissing = preferredObsidianKeys.has(item.ratingKey);
         const preferredObsidianWatched = preferredObsidianWatchedByKey.get(item.ratingKey);
 
-        const shouldProcess = this.shouldProcessIncrementally(
+        const shouldProcess = shouldProcessIncrementally({
           item,
-          prev,
+          previousState: prev,
           currentNotePath,
           preferObsidianWhenStateMissing,
           preferredObsidianWatched,
-          forceFullRebuild
-        );
+          forceFullRebuild,
+          observedObsidianWatched: this.noteObservedWatchedByRatingKey.get(item.ratingKey),
+          observedObsidianWatchlisted: this.noteObservedWatchlistedByRatingKey.get(item.ratingKey)
+        });
         if (shouldProcess) {
           processQueue.push(item);
           continue;
@@ -304,7 +341,11 @@ export class SyncEngine {
           this.emitStatus(`Plex Sync: ${index + 1}/${processQueue.length}`);
 
           if (accountClientForDetails) {
-            item = await this.enrichAccountItemForSync(accountClientForDetails, item);
+            item = await enrichAccountItemForSync({
+              client: accountClientForDetails,
+              item,
+              logger: this.logger
+            });
           }
 
           const result = await this.syncSingleItem(
@@ -415,577 +456,6 @@ export class SyncEngine {
     return this.deviceId;
   }
 
-  private async fetchPlexItems(client: PmsClient, settings: PlexSyncSettings): Promise<PlexMediaItem[]> {
-    const sections = await client.listSections();
-    if (sections.length === 0) {
-      throw new Error(
-        "Plex retornou zero bibliotecas. Crie pelo menos uma biblioteca de Filmes ou Programas de TV no servidor."
-      );
-    }
-
-    const targetSections = this.pickTargetSections(sections, settings);
-    if (targetSections.length === 0) {
-      const available = sections
-        .filter((section) => section.type === "movie" || section.type === "show")
-        .map((section) => `${section.title} (${section.type})`);
-
-      if (available.length === 0) {
-        throw new Error(
-          "Nenhuma biblioteca do tipo movie/show foi encontrada no Plex. O plugin sincroniza apenas Filmes e Programas de TV."
-        );
-      }
-
-      throw new Error(
-        `Nenhuma biblioteca selecionada corresponde ao servidor. Disponiveis: ${available.join(", ")}`
-      );
-    }
-
-    const allItems: PlexMediaItem[] = [];
-    for (const section of targetSections) {
-      const items = await client.listLibraryItems(section.key, section.title);
-      allItems.push(...items);
-    }
-
-    const dedup = new Map<string, PlexMediaItem>();
-    for (const item of allItems) {
-      dedup.set(item.ratingKey, item);
-    }
-
-    return Array.from(dedup.values());
-  }
-
-  private async fetchAccountItems(
-    client: PlexDiscoverClient,
-    state: SyncStateFile,
-    noteTrackedKeys: string[],
-    excludedKeys: Set<string>,
-    trackedLookupLimit: number
-  ): Promise<PlexMediaItem[]> {
-    const watchlistItems = await client.listWatchlist();
-    const lastKnownViewedAt = this.computeLastKnownViewedAt(state);
-    const watchedHistoryItems = await client.listWatchedHistory(lastKnownViewedAt);
-    const dedup = new Map<string, PlexMediaItem>(
-      watchlistItems
-        .filter((item) => !excludedKeys.has(item.ratingKey))
-        .map((item) => [item.ratingKey, item])
-    );
-
-    for (const item of watchedHistoryItems) {
-      if (excludedKeys.has(item.ratingKey)) {
-        continue;
-      }
-      if (!dedup.has(item.ratingKey)) {
-        dedup.set(item.ratingKey, item);
-      }
-    }
-
-    const trackedKeys = Array.from(
-      new Set<string>(
-        [...Object.keys(state.items), ...noteTrackedKeys].filter((ratingKey) => !excludedKeys.has(ratingKey))
-      )
-    ).filter((ratingKey) => !dedup.has(ratingKey));
-
-    const cappedTrackedKeys =
-      trackedLookupLimit > 0 ? trackedKeys.slice(0, trackedLookupLimit) : [];
-
-    await this.loadTrackedAccountItemsConcurrently(client, cappedTrackedKeys, dedup);
-
-    return Array.from(dedup.values());
-  }
-
-  private async fetchTargetAccountItems(
-    client: PlexDiscoverClient,
-    ratingKeys: string[],
-    excludedKeys: Set<string>
-  ): Promise<PlexMediaItem[]> {
-    const cleaned = Array.from(
-      new Set<string>(
-        ratingKeys
-          .filter((entry) => typeof entry === "string")
-          .map((entry) => entry.trim())
-          .filter((entry) => entry.length > 0 && !excludedKeys.has(entry))
-      )
-    );
-    if (cleaned.length === 0) {
-      return [];
-    }
-
-    const dedup = new Map<string, PlexMediaItem>();
-    await this.loadTrackedAccountItemsConcurrently(client, cleaned, dedup);
-    return cleaned
-      .map((ratingKey) => dedup.get(ratingKey))
-      .filter((item): item is PlexMediaItem => Boolean(item));
-  }
-
-  private computeLastKnownViewedAt(state: SyncStateFile): number | undefined {
-    let max = 0;
-    for (const item of Object.values(state.items)) {
-      if (typeof item.plexLastViewedAt === "number" && item.plexLastViewedAt > max) {
-        max = item.plexLastViewedAt;
-      }
-    }
-    return max > 0 ? max : undefined;
-  }
-
-  private async enrichAccountItemForSync(
-    client: PlexDiscoverClient,
-    item: PlexMediaItem
-  ): Promise<PlexMediaItem> {
-    try {
-      const detailed = await client.getTrackedItem(item.ratingKey);
-      if (detailed) {
-        return detailed;
-      }
-    } catch (error) {
-      this.logger.debug("falha ao enriquecer item da conta para sync", {
-        ratingKey: item.ratingKey,
-        error: String(error)
-      });
-    }
-    return item;
-  }
-
-  private async loadTrackedAccountItemsConcurrently(
-    client: PlexDiscoverClient,
-    ratingKeys: string[],
-    dedup: Map<string, PlexMediaItem>
-  ): Promise<void> {
-    if (ratingKeys.length === 0) {
-      return;
-    }
-
-    const concurrency = Math.min(8, ratingKeys.length);
-    let index = 0;
-
-    const workers = Array.from({ length: concurrency }).map(async () => {
-      while (true) {
-        const current = index;
-        index += 1;
-        if (current >= ratingKeys.length) {
-          break;
-        }
-        const ratingKey = ratingKeys[current];
-        try {
-          const tracked = await client.getTrackedItem(ratingKey);
-          if (tracked) {
-            dedup.set(ratingKey, tracked);
-          }
-        } catch (error) {
-          this.logger.debug("falha ao carregar item rastreado da conta", {
-            ratingKey,
-            error: String(error)
-          });
-        }
-      }
-    });
-
-    await Promise.all(workers);
-  }
-
-  private shouldProcessIncrementally(
-    item: PlexMediaItem,
-    previousState: SyncItemState | undefined,
-    currentNotePath: string | undefined,
-    preferObsidianWhenStateMissing: boolean,
-    preferredObsidianWatched: boolean | undefined,
-    forceFullRebuild: boolean
-  ): boolean {
-    if (forceFullRebuild) {
-      return true;
-    }
-
-    if (!previousState) {
-      return true;
-    }
-
-    if (preferObsidianWhenStateMissing || typeof preferredObsidianWatched === "boolean") {
-      return true;
-    }
-
-    if (!currentNotePath) {
-      return true;
-    }
-
-    if (previousState.notePath && previousState.notePath !== currentNotePath) {
-      return true;
-    }
-
-    const currentPlexWatched = plexWatched(item);
-    const prevPlexWatched = parseBool(previousState.plexWatched, currentPlexWatched);
-    if (currentPlexWatched !== prevPlexWatched) {
-      return true;
-    }
-
-    if (typeof item.inWatchlist === "boolean") {
-      const prevPlexWatchlisted = parseBool(previousState.plexWatchlisted, item.inWatchlist);
-      if (item.inWatchlist !== prevPlexWatchlisted) {
-        return true;
-      }
-    }
-
-    const observedObsidianWatched = this.noteObservedWatchedByRatingKey.get(item.ratingKey);
-    if (typeof observedObsidianWatched === "boolean") {
-      const prevObsidianWatched = parseBool(previousState.obsidianWatched, observedObsidianWatched);
-      if (observedObsidianWatched !== prevObsidianWatched) {
-        return true;
-      }
-    }
-
-    const observedObsidianWatchlisted = this.noteObservedWatchlistedByRatingKey.get(item.ratingKey);
-    if (typeof observedObsidianWatchlisted === "boolean") {
-      const prevObsidianWatchlisted = parseBool(
-        previousState.obsidianWatchlisted,
-        observedObsidianWatchlisted
-      );
-      if (observedObsidianWatchlisted !== prevObsidianWatchlisted) {
-        return true;
-      }
-    }
-
-    if (typeof item.updatedAt === "number") {
-      if (
-        typeof previousState.plexUpdatedAt !== "number" ||
-        previousState.plexUpdatedAt !== item.updatedAt
-      ) {
-        return true;
-      }
-    }
-
-    if (typeof item.lastViewedAt === "number") {
-      if (
-        typeof previousState.plexLastViewedAt !== "number" ||
-        previousState.plexLastViewedAt !== item.lastViewedAt
-      ) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  private async syncDeletedAccountItems(
-    client: PlexDiscoverClient,
-    state: SyncStateFile,
-    report: SyncReport,
-    explicitDeletedRatingKeys?: Set<string>
-  ): Promise<Set<string>> {
-    const removed = new Set<string>();
-    const candidates = this.findDeletedNoteCandidates(state, explicitDeletedRatingKeys);
-    if (candidates.length === 0) {
-      return removed;
-    }
-
-    // Protecao contra remocao em massa acidental por mudanca de pasta/config.
-    if (this.notePathByRatingKey.size === 0 && Object.keys(state.items).length > 0) {
-      const message =
-        "Exclusoes de notas detectadas, mas nenhuma nota Plex foi encontrada no vault atual. Remocao no Plex ignorada para evitar apagamento em massa.";
-      this.logger.warn(message);
-      report.errors.push(message);
-      return removed;
-    }
-
-    this.emitStatus(`Plex Sync: processando ${candidates.length} exclusao(oes) de nota...`);
-
-    for (const ratingKey of candidates) {
-      const failures: string[] = [];
-      let changed = false;
-
-      try {
-        await client.setWatchlisted(ratingKey, false);
-        changed = true;
-      } catch (error) {
-        failures.push(`watchlist: ${String(error)}`);
-      }
-
-      try {
-        await client.markWatched(ratingKey, false);
-        changed = true;
-      } catch (error) {
-        failures.push(`assistido: ${String(error)}`);
-      }
-
-      if (changed) {
-        removed.add(ratingKey);
-        report.updatedPlex += 1;
-      } else {
-        const message = `Falha ao propagar exclusao da nota ${ratingKey} para o Plex: ${failures.join(" | ")}`;
-        this.logger.error(message);
-        report.errors.push(message);
-      }
-    }
-
-    return removed;
-  }
-
-  private async pruneInactiveAccountItems(
-    noteRoot: string,
-    items: PlexMediaItem[],
-    state: SyncStateFile
-  ): Promise<Set<string>> {
-    const removed = new Set<string>();
-
-    for (const item of items) {
-      const watchlisted = parseBool(item.inWatchlist, false);
-      const watched = plexWatched(item);
-      if (watchlisted || watched) {
-        continue;
-      }
-
-      const trackedNotePath =
-        this.notePathByRatingKey.get(item.ratingKey) || state.items[item.ratingKey]?.notePath;
-      const removedAnyNote = await this.removeAccountItemNotes(noteRoot, item.ratingKey, trackedNotePath);
-
-      if (removedAnyNote || state.items[item.ratingKey]) {
-        removed.add(item.ratingKey);
-      }
-      this.notePathByRatingKey.delete(item.ratingKey);
-    }
-
-    return removed;
-  }
-
-  private async removeAccountItemNotes(
-    noteRoot: string,
-    ratingKey: string,
-    trackedRelativePath?: string
-  ): Promise<boolean> {
-    const noteRootNormalized = normalizeVaultPath(noteRoot);
-    const notePrefix = noteRootNormalized ? `${noteRootNormalized}/` : "";
-    const foldersToCleanup = new Set<string>();
-    let removedAny = false;
-
-    if (trackedRelativePath) {
-      const trackedAbsolutePath = normalizeVaultPath(noteRootNormalized, trackedRelativePath);
-      const exists = await this.store.fileExists(trackedAbsolutePath);
-      if (exists) {
-        await this.store.removeAdapterFile(trackedAbsolutePath);
-        removedAny = true;
-        const parent = getParentFolder(trackedRelativePath);
-        if (parent) {
-          foldersToCleanup.add(parent);
-        }
-      }
-    }
-
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      const filePath = normalizeVaultPath(file.path);
-      if (!filePath.startsWith(notePrefix)) {
-        continue;
-      }
-
-      const noteFrontmatter = await this.readNoteFrontmatterFast(filePath);
-      const type = noteFrontmatter.tipo;
-      const seriesRatingKey = noteFrontmatter.serie_rating_key;
-      if (
-        (type === "season" || type === "episode") &&
-        typeof seriesRatingKey === "string" &&
-        seriesRatingKey === ratingKey
-      ) {
-        await this.store.removeAdapterFile(filePath);
-        removedAny = true;
-        const relativePath = noteRootNormalized
-          ? filePath.slice(noteRootNormalized.length + 1)
-          : filePath;
-        const parent = getParentFolder(relativePath);
-        if (parent) {
-          foldersToCleanup.add(parent);
-        }
-      }
-    }
-
-    for (const folder of foldersToCleanup) {
-      await this.cleanupEmptyFoldersUnder(noteRootNormalized, folder);
-    }
-
-    return removedAny;
-  }
-
-  private async syncDeletedPmsItems(
-    pmsClient: PmsClient,
-    state: SyncStateFile,
-    report: SyncReport,
-    explicitDeletedRatingKeys?: Set<string>,
-    accountClient?: PlexDiscoverClient
-  ): Promise<Set<string>> {
-    const removed = new Set<string>();
-    const candidates = this.findDeletedNoteCandidates(state, explicitDeletedRatingKeys);
-    if (candidates.length === 0) {
-      return removed;
-    }
-
-    // Protecao contra remocao em massa acidental por mudanca de pasta/config.
-    if (this.notePathByRatingKey.size === 0 && Object.keys(state.items).length > 0) {
-      const message =
-        "Exclusoes de notas detectadas, mas nenhuma nota Plex foi encontrada no vault atual. Remocao no Plex ignorada para evitar apagamento em massa.";
-      this.logger.warn(message);
-      report.errors.push(message);
-      return removed;
-    }
-
-    this.emitStatus(`Plex Sync: processando ${candidates.length} exclusao(oes) de nota...`);
-
-    for (const ratingKey of candidates) {
-      const failures: string[] = [];
-      let changed = false;
-
-      if (accountClient) {
-        try {
-          await accountClient.setWatchlisted(ratingKey, false);
-          changed = true;
-        } catch (error) {
-          failures.push(`watchlist: ${String(error)}`);
-        }
-
-        try {
-          await accountClient.markWatched(ratingKey, false);
-          changed = true;
-        } catch (error) {
-          failures.push(`assistido-conta: ${String(error)}`);
-        }
-      }
-
-      try {
-        await pmsClient.markWatched(ratingKey, false);
-        changed = true;
-      } catch (error) {
-        failures.push(`assistido-pms: ${String(error)}`);
-      }
-
-      if (changed) {
-        removed.add(ratingKey);
-        report.updatedPlex += 1;
-      } else {
-        const message = `Falha ao propagar exclusao da nota ${ratingKey} para o Plex: ${failures.join(" | ")}`;
-        this.logger.error(message);
-        report.errors.push(message);
-      }
-    }
-
-    return removed;
-  }
-
-  private findDeletedNoteCandidates(
-    state: SyncStateFile,
-    explicitDeletedRatingKeys?: Set<string>
-  ): string[] {
-    const deleted: string[] = [];
-    const seen = new Set<string>();
-
-    for (const [ratingKey, itemState] of Object.entries(state.items)) {
-      if (!itemState.notePath) {
-        continue;
-      }
-      if (this.notePathByRatingKey.has(ratingKey)) {
-        continue;
-      }
-      if (seen.has(ratingKey)) {
-        continue;
-      }
-      deleted.push(ratingKey);
-      seen.add(ratingKey);
-    }
-
-    if (explicitDeletedRatingKeys && explicitDeletedRatingKeys.size > 0) {
-      for (const ratingKey of explicitDeletedRatingKeys) {
-        if (this.notePathByRatingKey.has(ratingKey)) {
-          continue;
-        }
-        if (seen.has(ratingKey)) {
-          continue;
-        }
-        deleted.push(ratingKey);
-        seen.add(ratingKey);
-      }
-    }
-
-    return deleted;
-  }
-
-  private async scanNotePathsByRatingKey(noteRoot: string): Promise<Map<string, string>> {
-    const root = normalizeVaultPath(noteRoot);
-    const rootPrefix = root.length > 0 ? `${root}/` : "";
-    const mapping = new Map<string, string>();
-    const observedWatchedByRatingKey = new Map<string, boolean>();
-    const observedWatchlistedByRatingKey = new Map<string, boolean>();
-
-    const files = this.app.vault.getMarkdownFiles();
-    for (const file of files) {
-      const filePath = normalizeVaultPath(file.path);
-      if (!filePath.startsWith(rootPrefix)) {
-        continue;
-      }
-
-      const noteFrontmatter = await this.readNoteFrontmatterFast(filePath);
-      const ratingKey = noteFrontmatter.plex_rating_key;
-      if (typeof ratingKey !== "string" || ratingKey.trim().length === 0) {
-        continue;
-      }
-      const noteType = noteFrontmatter.tipo;
-      if (typeof noteType === "string" && noteType !== "movie" && noteType !== "show") {
-        continue;
-      }
-
-      const relativePath = filePath.slice(rootPrefix.length);
-      const normalizedRatingKey = ratingKey.trim();
-      mapping.set(normalizedRatingKey, relativePath);
-      observedWatchedByRatingKey.set(
-        normalizedRatingKey,
-        parseBool(noteFrontmatter.assistido, false)
-      );
-      observedWatchlistedByRatingKey.set(
-        normalizedRatingKey,
-        parseBool(
-          noteFrontmatter.na_lista_para_assistir ?? noteFrontmatter.na_watchlist,
-          false
-        )
-      );
-    }
-
-    this.noteObservedWatchedByRatingKey = observedWatchedByRatingKey;
-    this.noteObservedWatchlistedByRatingKey = observedWatchlistedByRatingKey;
-    return mapping;
-  }
-
-  private async readNoteFrontmatterFast(path: string): Promise<Record<string, unknown>> {
-    const normalized = normalizeVaultPath(path);
-    const file = this.app.vault.getAbstractFileByPath(normalized);
-    const cached =
-      file instanceof TFile ? this.app.metadataCache.getFileCache(file)?.frontmatter : undefined;
-    if (isRecord(cached)) {
-      return normalizeFrontmatterKeys(cached);
-    }
-    const note = await this.store.readNote(normalized);
-    return note.frontmatter;
-  }
-
-  private pickTargetSections(sections: PlexSection[], settings: PlexSyncSettings): PlexSection[] {
-    const requested = settings.libraries.map((entry) => entry.trim()).filter(Boolean);
-
-    if (requested.length === 0) {
-      return sections.filter((section) => section.type === "movie" || section.type === "show");
-    }
-
-    const byTitle = new Map<string, PlexSection>(
-      sections.map((section) => [section.title.toLowerCase(), section])
-    );
-
-    const selected: PlexSection[] = [];
-    for (const name of requested) {
-      const section = byTitle.get(name.toLowerCase());
-      if (!section) {
-        this.logger.warn(`Biblioteca '${name}' não encontrada no Plex`);
-        continue;
-      }
-      if (!(section.type === "movie" || section.type === "show")) {
-        this.logger.warn(`Biblioteca '${name}' tipo '${section.type}' não suportada`);
-        continue;
-      }
-      selected.push(section);
-    }
-
-    return selected;
-  }
-
   private async syncSingleItem(
     item: PlexMediaItem,
     previousState: SyncItemState | undefined,
@@ -996,12 +466,14 @@ export class SyncEngine {
   ): Promise<SyncItemResult> {
     const noteRoot = normalizeVaultPath(settings.notesFolder);
     const previousRelPath = previousState?.notePath;
-    const { absolutePath, relativePath } = await this.resolveNotePath(
+    const { absolutePath, relativePath } = await resolveNotePath({
       item,
       noteRoot,
-      previousRelPath,
-      settings
-    );
+      previousRelativePath: previousRelPath,
+      settings,
+      mappedRelativePath: this.notePathByRatingKey.get(item.ratingKey),
+      store: this.store
+    });
 
     const note = await this.store.readNote(absolutePath);
     const existingMeta = note.frontmatter;
@@ -1183,13 +655,16 @@ export class SyncEngine {
     if (item.type === "show") {
       const showWatchedOverride =
         obsidianChanged && syncSource !== "plex" ? obsidianWatched : undefined;
-      const hierarchy = await this.syncShowHierarchy(
+      const hierarchy = await syncShowHierarchy({
+        app: this.app,
         noteRoot,
-        relativePath,
-        item,
+        showNoteRelativePath: relativePath,
+        showItem: item,
         client,
-        showWatchedOverride
-      );
+        showWatchedOverride,
+        logger: this.logger,
+        store: this.store
+      });
       if (hierarchy.noteChanged) {
         noteUpdated = true;
       }
@@ -1222,688 +697,6 @@ export class SyncEngine {
       plexUpdated,
       conflict
     };
-  }
-
-  private async syncShowHierarchy(
-    noteRoot: string,
-    showNoteRelativePath: string,
-    showItem: PlexMediaItem,
-    client: SyncClient,
-    showWatchedOverride?: boolean
-  ): Promise<ShowHierarchySyncResult> {
-    const seasons = showItem.seasons || [];
-    if (seasons.length === 0) {
-      return {
-        noteChanged: false,
-        plexUpdated: false
-      };
-    }
-
-    const showFolderRelative = getParentFolder(showNoteRelativePath);
-    if (!showFolderRelative) {
-      return {
-        noteChanged: false,
-        plexUpdated: false
-      };
-    }
-
-    let changed = false;
-    let plexUpdated = false;
-    const expectedGeneratedFiles = new Set<string>();
-    const generatedPathByRatingKey = await this.scanGeneratedPathsByRatingKey(
-      noteRoot,
-      showFolderRelative,
-      showItem.ratingKey
-    );
-
-    for (const season of seasons) {
-      const forceFromShow = typeof showWatchedOverride === "boolean";
-      const existingSeasonRelative = generatedPathByRatingKey.get(season.ratingKey);
-      const existingSeasonNote = existingSeasonRelative
-        ? await this.store.readNote(normalizeVaultPath(noteRoot, existingSeasonRelative))
-        : emptyNoteData();
-      const checkboxOverrides = forceFromShow
-        ? new Map<string, boolean>()
-        : parseSeasonCheckboxOverrides(existingSeasonNote.body);
-      const seasonAssistidoOverride = forceFromShow
-        ? undefined
-        : parseOptionalBool(existingSeasonNote.frontmatter.assistido);
-      const episodeDesiredWatched = new Map<string, boolean>();
-
-      for (const episode of season.episodes) {
-        episodeDesiredWatched.set(episode.ratingKey, episode.watched);
-
-        const desiredByCheckbox = checkboxOverrides.get(episode.ratingKey);
-        if (typeof desiredByCheckbox === "boolean") {
-          episodeDesiredWatched.set(episode.ratingKey, desiredByCheckbox);
-        }
-
-        if (!forceFromShow) {
-          const existingEpisodeRelative = generatedPathByRatingKey.get(episode.ratingKey);
-          const existingEpisode = existingEpisodeRelative
-            ? await this.store.readNote(normalizeVaultPath(noteRoot, existingEpisodeRelative))
-            : emptyNoteData();
-          const desiredByEpisodeFrontmatter = parseOptionalBool(existingEpisode.frontmatter.assistido);
-          if (typeof desiredByEpisodeFrontmatter === "boolean") {
-            episodeDesiredWatched.set(episode.ratingKey, desiredByEpisodeFrontmatter);
-          }
-        }
-      }
-
-      if (forceFromShow) {
-        for (const episode of season.episodes) {
-          episodeDesiredWatched.set(episode.ratingKey, showWatchedOverride);
-        }
-      }
-
-      const watchedFromPlex = countWatchedEpisodes(season);
-      const totalEpisodesInSeason =
-        typeof season.episodeCount === "number" ? season.episodeCount : season.episodes.length;
-      const seasonWatchedFromPlex =
-        totalEpisodesInSeason > 0 ? watchedFromPlex >= totalEpisodesInSeason : false;
-      if (
-        typeof seasonAssistidoOverride === "boolean" &&
-        seasonAssistidoOverride !== seasonWatchedFromPlex
-      ) {
-        for (const episode of season.episodes) {
-          episodeDesiredWatched.set(episode.ratingKey, seasonAssistidoOverride);
-        }
-      }
-
-      const pendingEpisodeUpdates = season.episodes
-        .map((episode) => {
-          const desiredWatched = episodeDesiredWatched.get(episode.ratingKey);
-          if (typeof desiredWatched !== "boolean" || desiredWatched === episode.watched) {
-            return undefined;
-          }
-          return { episode, desiredWatched };
-        })
-        .filter(
-          (entry): entry is { episode: PlexSeasonInfo["episodes"][number]; desiredWatched: boolean } =>
-            entry !== undefined
-        );
-
-      await Promise.all(
-        pendingEpisodeUpdates.map(async ({ episode, desiredWatched }) => {
-          try {
-            await client.markWatched(episode.ratingKey, desiredWatched);
-            episode.watched = desiredWatched;
-            plexUpdated = true;
-          } catch (error) {
-            this.logger.debug("falha ao aplicar checkbox/frontmatter da temporada no Plex", {
-              ratingKey: episode.ratingKey,
-              desiredWatched,
-              error: String(error)
-            });
-          }
-        })
-      );
-
-      const watchedEpisodes = countWatchedEpisodes(season);
-      const totalEpisodes =
-        typeof season.episodeCount === "number" ? season.episodeCount : season.episodes.length;
-      const seasonWatched = totalEpisodes > 0 ? watchedEpisodes >= totalEpisodes : false;
-
-      const seasonFolderName = buildSeasonFolderName(season);
-      const seasonFolderRelative = normalizeVaultPath(showFolderRelative, seasonFolderName);
-      const seasonNoteRelative = normalizeVaultPath(
-        seasonFolderRelative,
-        `${buildSeasonNoteFileName(seasonFolderName)}.md`
-      );
-      expectedGeneratedFiles.add(seasonNoteRelative);
-
-      if (existingSeasonRelative) {
-        const existingSeasonFolderRelative = getParentFolder(existingSeasonRelative);
-        if (
-          existingSeasonFolderRelative &&
-          existingSeasonFolderRelative !== seasonFolderRelative
-        ) {
-          const movedFolder = await this.moveGeneratedPath(
-            noteRoot,
-            existingSeasonFolderRelative,
-            seasonFolderRelative
-          );
-          if (movedFolder) {
-            changed = true;
-            this.rebaseGeneratedPathsForFolder(
-              generatedPathByRatingKey,
-              existingSeasonFolderRelative,
-              seasonFolderRelative
-            );
-          }
-        }
-      }
-
-      const currentSeasonRelative = generatedPathByRatingKey.get(season.ratingKey);
-      if (currentSeasonRelative && currentSeasonRelative !== seasonNoteRelative) {
-        const movedSeasonNote = await this.moveGeneratedPath(
-          noteRoot,
-          currentSeasonRelative,
-          seasonNoteRelative
-        );
-        if (movedSeasonNote) {
-          changed = true;
-        }
-      }
-      generatedPathByRatingKey.set(season.ratingKey, seasonNoteRelative);
-
-      for (const episode of season.episodes) {
-        const episodeFileBase = buildEpisodeFileBaseName(episode);
-        const episodeRelative = normalizeVaultPath(seasonFolderRelative, `${episodeFileBase}.md`);
-        expectedGeneratedFiles.add(episodeRelative);
-
-        const existingEpisodeRelative = generatedPathByRatingKey.get(episode.ratingKey);
-        if (existingEpisodeRelative && existingEpisodeRelative !== episodeRelative) {
-          const movedEpisode = await this.moveGeneratedPath(
-            noteRoot,
-            existingEpisodeRelative,
-            episodeRelative
-          );
-          if (movedEpisode) {
-            changed = true;
-          }
-        }
-        generatedPathByRatingKey.set(episode.ratingKey, episodeRelative);
-        const refreshedEpisodeNote = await this.store.readNote(
-          normalizeVaultPath(noteRoot, episodeRelative)
-        );
-
-        const episodeRendered = await this.renderManagedHierarchyNote(
-          noteRoot,
-          episodeRelative,
-          {
-            plex_rating_key: episode.ratingKey,
-            plex_parent_rating_key: season.ratingKey,
-            biblioteca: showItem.libraryTitle,
-            tipo: "episode",
-            titulo: episode.title,
-            serie_titulo: showItem.title,
-            serie_rating_key: showItem.ratingKey,
-            ano: showItem.year,
-            temporada_numero: episode.seasonNumber ?? season.seasonNumber,
-            episodio_numero: episode.episodeNumber,
-            resumo: episode.summary,
-            duracao_minutos: episode.durationMs
-              ? Math.round(episode.durationMs / 60000)
-              : undefined,
-            pausa: normalizePauseSeed(refreshedEpisodeNote.frontmatter.pausa),
-            assistido: episode.watched
-          },
-          defaultEpisodeBody(showItem.title, seasonFolderName, episode)
-        );
-        if (episodeRendered) {
-          changed = true;
-        }
-      }
-
-      const refreshedSeasonNote = await this.store.readNote(normalizeVaultPath(noteRoot, seasonNoteRelative));
-      const seasonBodySeed = refreshedSeasonNote.exists
-        ? refreshedSeasonNote.body
-        : defaultSeasonBody(showItem.title, seasonFolderName);
-      const seasonBody = applyManagedSeasonEpisodesSection(
-        seasonBodySeed,
-        season,
-        seasonFolderRelative
-      );
-      const seasonRendered = await this.renderManagedHierarchyNote(
-        noteRoot,
-        seasonNoteRelative,
-        {
-          plex_rating_key: season.ratingKey,
-          plex_parent_rating_key: showItem.ratingKey,
-          biblioteca: showItem.libraryTitle,
-          tipo: "season",
-          titulo: season.title,
-          serie_titulo: showItem.title,
-          serie_rating_key: showItem.ratingKey,
-          ano: showItem.year,
-          temporada_numero: season.seasonNumber,
-          resumo: season.summary,
-          nota_critica: season.rating,
-          nota_critica_fonte: season.ratingImage,
-          nota_publico: season.audienceRating,
-          nota_publico_fonte: season.audienceRatingImage,
-          capa_url: season.thumb,
-          fundo_url: season.art,
-          episodios: totalEpisodes,
-          episodios_assistidos: watchedEpisodes,
-          assistido: seasonWatched
-        },
-        seasonBody
-      );
-      if (seasonRendered) {
-        changed = true;
-      }
-    }
-
-    const cleaned = await this.cleanupGeneratedShowNotes(
-      noteRoot,
-      showFolderRelative,
-      showItem.ratingKey,
-      expectedGeneratedFiles
-    );
-    const cleanedFolders = await this.cleanupEmptyFoldersUnder(noteRoot, showFolderRelative);
-    return {
-      noteChanged: changed || cleaned || cleanedFolders,
-      plexUpdated
-    };
-  }
-
-  private async scanGeneratedPathsByRatingKey(
-    noteRoot: string,
-    showFolderRelative: string,
-    showRatingKey: string
-  ): Promise<Map<string, string>> {
-    const result = new Map<string, string>();
-    const noteRootNormalized = normalizeVaultPath(noteRoot);
-    const folderPrefix = `${normalizeVaultPath(noteRootNormalized, showFolderRelative)}/`;
-
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      const filePath = normalizeVaultPath(file.path);
-      if (!filePath.startsWith(folderPrefix)) {
-        continue;
-      }
-      const note = await this.store.readNote(filePath);
-      const type = note.frontmatter.tipo;
-      const ratingKey = note.frontmatter.plex_rating_key;
-      const seriesRatingKey = note.frontmatter.serie_rating_key;
-      if (
-        (type === "season" || type === "episode") &&
-        typeof ratingKey === "string" &&
-        typeof seriesRatingKey === "string" &&
-        seriesRatingKey === showRatingKey
-      ) {
-        const relativePath = noteRootNormalized
-          ? filePath.slice(noteRootNormalized.length + 1)
-          : filePath;
-        result.set(ratingKey, relativePath);
-      }
-    }
-
-    return result;
-  }
-
-  private async moveGeneratedPath(
-    noteRoot: string,
-    fromRelativePath: string,
-    toRelativePath: string
-  ): Promise<boolean> {
-    if (fromRelativePath === toRelativePath) {
-      return false;
-    }
-
-    const fromAbsolute = normalizeVaultPath(noteRoot, fromRelativePath);
-    const toAbsolute = normalizeVaultPath(noteRoot, toRelativePath);
-    const fromExists = await this.store.fileExists(fromAbsolute);
-    if (!fromExists) {
-      return false;
-    }
-    const toExists = await this.store.fileExists(toAbsolute);
-    if (toExists) {
-      return false;
-    }
-
-    await this.store.moveAdapterFile(fromAbsolute, toAbsolute);
-    return true;
-  }
-
-  private rebaseGeneratedPathsForFolder(
-    mapping: Map<string, string>,
-    oldFolderRelative: string,
-    newFolderRelative: string
-  ): void {
-    const oldPrefix = `${normalizeVaultPath(oldFolderRelative)}/`;
-    const newPrefix = `${normalizeVaultPath(newFolderRelative)}/`;
-
-    for (const [ratingKey, relativePath] of mapping.entries()) {
-      const normalized = normalizeVaultPath(relativePath);
-      if (normalized === normalizeVaultPath(oldFolderRelative)) {
-        mapping.set(ratingKey, normalizeVaultPath(newFolderRelative));
-        continue;
-      }
-      if (normalized.startsWith(oldPrefix)) {
-        mapping.set(ratingKey, normalizeVaultPath(newPrefix, normalized.slice(oldPrefix.length)));
-      }
-    }
-  }
-
-  private async cleanupEmptyFoldersUnder(noteRoot: string, rootRelative: string): Promise<boolean> {
-    const rootAbsolute = normalizeVaultPath(noteRoot, rootRelative);
-    const rootExists = await this.store.fileExists(rootAbsolute);
-    if (!rootExists) {
-      return false;
-    }
-
-    const listing = await this.safeList(rootAbsolute);
-    if (!listing) {
-      return false;
-    }
-
-    let removedAny = false;
-    for (const subfolder of listing.folders) {
-      const removed = await this.removeEmptyFoldersRecursive(normalizeVaultPath(subfolder));
-      if (removed) {
-        removedAny = true;
-      }
-    }
-
-    return removedAny;
-  }
-
-  private async removeEmptyFoldersRecursive(folderAbsolutePath: string): Promise<boolean> {
-    const listing = await this.safeList(folderAbsolutePath);
-    if (!listing) {
-      return false;
-    }
-
-    let removedAny = false;
-    for (const subfolder of listing.folders) {
-      const removed = await this.removeEmptyFoldersRecursive(normalizeVaultPath(subfolder));
-      if (removed) {
-        removedAny = true;
-      }
-    }
-
-    const refreshed = await this.safeList(folderAbsolutePath);
-    if (!refreshed) {
-      return removedAny;
-    }
-
-    if (refreshed.files.length === 0 && refreshed.folders.length === 0) {
-      try {
-        await this.app.vault.adapter.rmdir(folderAbsolutePath, false);
-        return true;
-      } catch {
-        return removedAny;
-      }
-    }
-
-    return removedAny;
-  }
-
-  private async safeList(
-    path: string
-  ): Promise<{ files: string[]; folders: string[] } | undefined> {
-    try {
-      const listing = await this.app.vault.adapter.list(path);
-      return {
-        files: listing.files,
-        folders: listing.folders
-      };
-    } catch {
-      return undefined;
-    }
-  }
-
-  private async renderManagedHierarchyNote(
-    noteRoot: string,
-    relativePath: string,
-    managedFrontmatter: Record<string, unknown>,
-    initialBody: string
-  ): Promise<boolean> {
-    const absolutePath = normalizeVaultPath(noteRoot, relativePath);
-    const note = await this.store.readNote(absolutePath);
-    const managedSeed = { ...managedFrontmatter };
-    if (!note.exists) {
-      managedSeed.sincronizado_em = nowIso();
-      managedSeed.sincronizado_por = "plex";
-    } else {
-      const existingSyncedAt = asNonEmptyString(note.frontmatter.sincronizado_em);
-      const existingSyncedBy = asNonEmptyString(note.frontmatter.sincronizado_por);
-      if (existingSyncedAt) {
-        managedSeed.sincronizado_em = existingSyncedAt;
-      }
-      if (existingSyncedBy) {
-        managedSeed.sincronizado_por = existingSyncedBy;
-      }
-    }
-
-    const mergedFrontmatter = mergeFrontmatter(
-      note.frontmatter,
-      managedSeed as never
-    );
-    this.applyNonManagedSeedFrontmatter(mergedFrontmatter, managedSeed);
-    const body = note.exists ? note.body : initialBody;
-    const rendered = this.store.renderMarkdown(mergedFrontmatter, body);
-    if (note.exists && rendered === note.content) {
-      return false;
-    }
-    await this.store.writeNote(absolutePath, rendered);
-    return true;
-  }
-
-  private applyNonManagedSeedFrontmatter(
-    mergedFrontmatter: Record<string, unknown>,
-    managedFrontmatter: Record<string, unknown>
-  ): void {
-    for (const [key, value] of Object.entries(managedFrontmatter)) {
-      if (MANAGED_KEYS.includes(key as (typeof MANAGED_KEYS)[number])) {
-        continue;
-      }
-      if (key in mergedFrontmatter) {
-        continue;
-      }
-      if (value === undefined || value === null || value === "") {
-        continue;
-      }
-      mergedFrontmatter[key] = value;
-    }
-  }
-
-  private async cleanupGeneratedShowNotes(
-    noteRoot: string,
-    showFolderRelative: string,
-    showRatingKey: string,
-    expectedFiles: Set<string>
-  ): Promise<boolean> {
-    const noteRootNormalized = normalizeVaultPath(noteRoot);
-    const folderPrefix = `${normalizeVaultPath(noteRootNormalized, showFolderRelative)}/`;
-    let removedAny = false;
-
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      const filePath = normalizeVaultPath(file.path);
-      if (!filePath.startsWith(folderPrefix)) {
-        continue;
-      }
-
-      const relativePath = noteRootNormalized
-        ? filePath.slice(noteRootNormalized.length + 1)
-        : filePath;
-      if (expectedFiles.has(relativePath)) {
-        continue;
-      }
-
-      const note = await this.store.readNote(filePath);
-      const type = note.frontmatter.tipo;
-      const seriesRatingKey = note.frontmatter.serie_rating_key;
-      if (
-        (type === "season" || type === "episode") &&
-        typeof seriesRatingKey === "string" &&
-        seriesRatingKey === showRatingKey
-      ) {
-        await this.store.removeAdapterFile(filePath);
-        removedAny = true;
-      }
-    }
-
-    return removedAny;
-  }
-
-  private async resolveNotePath(
-    item: PlexMediaItem,
-    noteRoot: string,
-    previousRelativePath: string | undefined,
-    settings: PlexSyncSettings
-  ): Promise<{ absolutePath: string; relativePath: string }> {
-    const { relativePath: canonicalRelativePath, absolutePath: canonicalAbsolutePath } =
-      await this.resolveCanonicalPath(item, noteRoot, settings);
-
-    if (previousRelativePath) {
-      const previousAbsolute = normalizeVaultPath(noteRoot, previousRelativePath);
-      const exists = await this.store.fileExists(previousAbsolute);
-      if (exists) {
-        if (previousRelativePath !== canonicalRelativePath) {
-          const canonicalExists = await this.store.fileExists(canonicalAbsolutePath);
-          if (!canonicalExists) {
-            await this.store.moveAdapterFile(previousAbsolute, canonicalAbsolutePath);
-            return {
-              absolutePath: canonicalAbsolutePath,
-              relativePath: canonicalRelativePath
-            };
-          }
-        }
-        return {
-          absolutePath: previousAbsolute,
-          relativePath: previousRelativePath
-        };
-      }
-    }
-
-    const mappedRelativePath = this.notePathByRatingKey.get(item.ratingKey);
-    if (mappedRelativePath) {
-      const mappedAbsolute = normalizeVaultPath(noteRoot, mappedRelativePath);
-      const exists = await this.store.fileExists(mappedAbsolute);
-      if (exists) {
-        if (mappedRelativePath !== canonicalRelativePath) {
-          const canonicalExists = await this.store.fileExists(canonicalAbsolutePath);
-          if (!canonicalExists) {
-            await this.store.moveAdapterFile(mappedAbsolute, canonicalAbsolutePath);
-            return {
-              absolutePath: canonicalAbsolutePath,
-              relativePath: canonicalRelativePath
-            };
-          }
-        }
-        return {
-          absolutePath: mappedAbsolute,
-          relativePath: mappedRelativePath
-        };
-      }
-    }
-
-    return {
-      absolutePath: canonicalAbsolutePath,
-      relativePath: canonicalRelativePath
-    };
-  }
-
-  private async resolveCanonicalPath(
-    item: PlexMediaItem,
-    noteRoot: string,
-    settings: PlexSyncSettings
-  ): Promise<{ absolutePath: string; relativePath: string }> {
-    const targetFolder = mediaTypeFolder(item.type, settings.obsidianLocale);
-    const baseName = buildPreferredFileBaseName(item);
-
-    for (let attempt = 0; attempt < 500; attempt += 1) {
-      const numberedBase = buildNumberedBaseName(baseName, attempt);
-      const relativePath = buildMediaRelativePath(item.type, targetFolder, numberedBase);
-      const absolutePath = normalizeVaultPath(noteRoot, relativePath);
-      const exists = await this.store.fileExists(absolutePath);
-
-      if (!exists) {
-        return {
-          absolutePath,
-          relativePath
-        };
-      }
-
-      const existingNote = await this.store.readNote(absolutePath);
-      const existingRatingKey = existingNote.frontmatter.plex_rating_key;
-      if (
-        typeof existingRatingKey === "string" &&
-        existingRatingKey.trim() === item.ratingKey
-      ) {
-        return {
-          absolutePath,
-          relativePath
-        };
-      }
-    }
-
-    const fallbackBase = `${baseName} - ${item.ratingKey.slice(-6)}`;
-    const fallbackRelativePath = buildMediaRelativePath(item.type, targetFolder, fallbackBase);
-    return {
-      absolutePath: normalizeVaultPath(noteRoot, fallbackRelativePath),
-      relativePath: fallbackRelativePath
-    };
-  }
-
-  private async resolvePmsTarget(settings: PlexSyncSettings): Promise<ResolvedPmsTarget> {
-    const timeoutSeconds = ensureMinNumber(settings.requestTimeoutSeconds, 5);
-
-    if (settings.authMode === "manual") {
-      if (!settings.plexBaseUrl.trim() || !settings.plexToken.trim()) {
-        throw new Error("configure plexBaseUrl e plexToken nas settings (modo manual)");
-      }
-      return {
-        baseUrl: settings.plexBaseUrl.trim(),
-        token: settings.plexToken.trim(),
-        serverName: "manual",
-        connectionUri: settings.plexBaseUrl.trim()
-      };
-    }
-
-    if (!settings.plexAccountToken.trim()) {
-      throw new Error("modo conta Plex: faça login primeiro (Plex Sync: Login with Plex Account)");
-    }
-
-    if (!settings.selectedServerMachineId.trim()) {
-      throw new Error("modo conta Plex: selecione um servidor em Settings");
-    }
-
-    const server = settings.serversCache.find(
-      (entry) => entry.machineId === settings.selectedServerMachineId
-    );
-
-    if (!server) {
-      throw new Error("servidor selecionado não encontrado no cache. Rode 'Refresh Plex Servers'");
-    }
-
-    const orderedConnections = orderConnections(server.connections, settings.connectionStrategy);
-    if (orderedConnections.length === 0) {
-      throw new Error("servidor sem conexoes disponiveis para a estrategia selecionada");
-    }
-
-    const tokens = tokenCandidates(server.accessToken, settings.plexAccountToken);
-    if (tokens.length === 0) {
-      throw new Error("token ausente para acessar o servidor selecionado");
-    }
-
-    const probeErrors: string[] = [];
-
-    for (const connection of orderedConnections) {
-      for (const token of tokens) {
-        try {
-          const probeClient = new PmsClient(
-            {
-              baseUrl: connection.uri,
-              token,
-              timeoutSeconds
-            },
-            this.logger
-          );
-          await probeClient.listSections();
-          return {
-            baseUrl: connection.uri,
-            token,
-            serverName: server.name,
-            machineId: server.machineId,
-            connectionUri: connection.uri
-          };
-        } catch (error) {
-          probeErrors.push(`${connection.uri} => ${String(error)}`);
-          this.logger.debug("falha probe PMS", {
-            connection: connection.uri,
-            error: String(error)
-          });
-        }
-      }
-    }
-
-    throw new Error(
-      `falha ao conectar no servidor '${server.name}' (${server.machineId}). tentativas: ${probeErrors.length}`
-    );
   }
 
   private buildReport(reason: string): SyncReport {
@@ -2032,259 +825,6 @@ function buildDeviceId(): string {
   return `device-${now}-${rand}`;
 }
 
-function mediaTypeFolder(type: string, obsidianLocale: string): string {
-  const locale = (obsidianLocale || "").trim().toLowerCase();
-  const isPortuguese = locale.startsWith("pt");
-  if (type === "show") {
-    return isPortuguese ? "Series" : "Series";
-  }
-  return isPortuguese ? "Filmes" : "Movies";
-}
-
-function buildPreferredFileBaseName(item: PlexMediaItem): string {
-  const sanitizedTitle = sanitizeFileNameSegment(item.title);
-  if (typeof item.year === "number" && Number.isFinite(item.year)) {
-    const year = Math.floor(item.year);
-    if (year >= 1800 && year <= 3000) {
-      return `${sanitizedTitle} (${year})`;
-    }
-  }
-
-  return sanitizedTitle;
-}
-
-function sanitizeFileNameSegment(value: string): string {
-  const cleaned = (value || "")
-    .replace(/[\\/:*?"<>|]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[. ]+$/g, "");
-
-  return cleaned.length > 0 ? cleaned : "Item";
-}
-
-function buildNumberedBaseName(baseName: string, attempt: number): string {
-  if (attempt === 0) {
-    return baseName;
-  }
-
-  return `${baseName} - ${attempt + 1}`;
-}
-
-function buildMediaRelativePath(type: string, rootFolder: string, baseName: string): string {
-  if (type === "show") {
-    return normalizeVaultPath(rootFolder, baseName, `${baseName}.md`);
-  }
-  return normalizeVaultPath(rootFolder, `${baseName}.md`);
-}
-
-function getParentFolder(path: string): string {
-  const normalized = normalizeVaultPath(path);
-  const idx = normalized.lastIndexOf("/");
-  if (idx <= 0) {
-    return "";
-  }
-  return normalized.slice(0, idx);
-}
-
-function buildSeasonFolderName(season: PlexSeasonInfo): string {
-  if (typeof season.seasonNumber === "number") {
-    return `Temporada ${season.seasonNumber}`;
-  }
-  return sanitizeFileNameSegment(season.title || "Temporada");
-}
-
-function buildSeasonNoteFileName(seasonFolderName: string): string {
-  if (seasonFolderName.startsWith("- ")) {
-    return seasonFolderName;
-  }
-  return `- ${seasonFolderName}`;
-}
-
-function countWatchedEpisodes(season: PlexSeasonInfo): number {
-  if (typeof season.watchedEpisodeCount === "number") {
-    return season.watchedEpisodeCount;
-  }
-  return season.episodes.filter((entry) => entry.watched).length;
-}
-
-function buildEpisodeFileBaseName(episode: PlexSeasonInfo["episodes"][number]): string {
-  const sanitizedTitle = sanitizeFileNameSegment(episode.title);
-  if (typeof episode.episodeNumber === "number") {
-    const episodeLabel = buildEpisodeNumberLabel(episode.episodeNumber);
-    return `${episodeLabel} - ${sanitizedTitle}`;
-  }
-
-  return sanitizedTitle;
-}
-
-function defaultSeasonBody(showTitle: string, seasonLabel: string): string {
-  return `# ${showTitle} - ${seasonLabel}\n\nNota sincronizada automaticamente com Plex.\n`;
-}
-
-function defaultEpisodeBody(
-  showTitle: string,
-  seasonLabel: string,
-  episode: PlexSeasonInfo["episodes"][number]
-): string {
-  const label =
-    typeof episode.episodeNumber === "number"
-      ? `${buildEpisodeNumberLabel(episode.episodeNumber)} - ${episode.title}`
-      : episode.title;
-  return `# ${label}\n\nSérie: ${showTitle}\nTemporada: ${seasonLabel}\n\nNota sincronizada automaticamente com Plex.\n`;
-}
-
-function applyManagedSeasonEpisodesSection(
-  body: string,
-  season: PlexSeasonInfo,
-  seasonFolderRelative: string
-): string {
-  const normalized = body.replace(/\r\n/g, "\n");
-  const withoutSection = normalized
-    .replace(
-      /<!-- plex-season-episodes:start -->[\s\S]*?<!-- plex-season-episodes:end -->\n?/g,
-      ""
-    )
-    .trimEnd();
-
-  const section = renderSeasonEpisodesSection(season, seasonFolderRelative);
-  const prefix = withoutSection.length > 0 ? `${withoutSection}\n\n` : "";
-  return `${prefix}${section}\n`;
-}
-
-function renderSeasonEpisodesSection(season: PlexSeasonInfo, seasonFolderRelative: string): string {
-  const episodes = [...season.episodes].sort((a, b) => {
-    const aNum = typeof a.episodeNumber === "number" ? a.episodeNumber : Number.MAX_SAFE_INTEGER;
-    const bNum = typeof b.episodeNumber === "number" ? b.episodeNumber : Number.MAX_SAFE_INTEGER;
-    if (aNum !== bNum) {
-      return aNum - bNum;
-    }
-    return a.title.localeCompare(b.title, "pt-BR");
-  });
-
-  const lines: string[] = ["<!-- plex-season-episodes:start -->", "## Episodios", ""];
-  for (const episode of episodes) {
-    const check = episode.watched ? "x" : " ";
-    const targetFile = buildEpisodeFileBaseName(episode);
-    const target = normalizeVaultPath(seasonFolderRelative, targetFile);
-    const label = buildEpisodeDisplayLabel(episode);
-    lines.push(
-      `- [${check}] [[${target}|${label}]] <!-- plex_episode_rating_key:${episode.ratingKey} -->`
-    );
-  }
-  lines.push("<!-- plex-season-episodes:end -->");
-  return lines.join("\n");
-}
-
-function buildEpisodeDisplayLabel(episode: PlexSeasonInfo["episodes"][number]): string {
-  if (typeof episode.episodeNumber === "number") {
-    const number = buildEpisodeNumberLabel(episode.episodeNumber);
-    return `${number} - ${episode.title}`;
-  }
-  return episode.title;
-}
-
-function buildEpisodeNumberLabel(episodeNumber: number): string {
-  return String(Math.floor(episodeNumber)).padStart(2, "0");
-}
-
-function normalizePauseSeed(value: unknown): string {
-  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-    return formatAsMinuteSecond(Math.floor(value));
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed.length === 0) {
-      return "";
-    }
-    if (trimmed === "--:--") {
-      return "";
-    }
-    const normalized = normalizePauseString(trimmed);
-    if (normalized) {
-      return normalized;
-    }
-    return trimmed;
-  }
-  return "";
-}
-
-function normalizePauseString(raw: string): string | undefined {
-  if (/^\d+$/.test(raw)) {
-    if (raw.length >= 3) {
-      const seconds = Number(raw.slice(-2));
-      const minutes = Number(raw.slice(0, -2));
-      if (Number.isFinite(seconds) && Number.isFinite(minutes) && seconds < 60) {
-        return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-      }
-    }
-    const asSeconds = Number(raw);
-    if (Number.isFinite(asSeconds) && asSeconds >= 0) {
-      return formatAsMinuteSecond(Math.floor(asSeconds));
-    }
-    return undefined;
-  }
-
-  if (/^\d{1,2}:\d{2}$/.test(raw)) {
-    const [minutesRaw, secondsRaw] = raw.split(":");
-    const minutes = Number(minutesRaw);
-    const seconds = Number(secondsRaw);
-    if (Number.isFinite(minutes) && Number.isFinite(seconds) && seconds < 60) {
-      return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-    }
-    return undefined;
-  }
-
-  return undefined;
-}
-
-function formatAsMinuteSecond(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
-function parseSeasonCheckboxOverrides(body: string): Map<string, boolean> {
-  const overrides = new Map<string, boolean>();
-  const normalized = body.replace(/\r\n/g, "\n");
-  const sectionMatch = normalized.match(
-    /<!-- plex-season-episodes:start -->[\s\S]*?<!-- plex-season-episodes:end -->/
-  );
-  if (!sectionMatch) {
-    return overrides;
-  }
-
-  const lineRegex =
-    /^\s*-\s*\[( |x|X)\][^\n]*<!--\s*plex_episode_rating_key:\s*([^\s>]+)\s*-->\s*$/gm;
-  let match: RegExpExecArray | null;
-  while ((match = lineRegex.exec(sectionMatch[0])) !== null) {
-    const checked = match[1].toLowerCase() === "x";
-    const ratingKey = match[2];
-    overrides.set(ratingKey, checked);
-  }
-
-  return overrides;
-}
-
-function parseOptionalBool(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "number") {
-    return value !== 0;
-  }
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (["true", "1", "yes", "y", "sim", "s"].includes(normalized)) {
-      return true;
-    }
-    if (["false", "0", "no", "n", "nao"].includes(normalized)) {
-      return false;
-    }
-  }
-  return undefined;
-}
-
 function normalizeRatingKeys(values?: string[]): Set<string> {
   if (!Array.isArray(values)) {
     return new Set<string>();
@@ -2297,38 +837,10 @@ function normalizeRatingKeys(values?: string[]): Set<string> {
   );
 }
 
-function normalizeFrontmatterKeys(frontmatter: Record<string, unknown>): Record<string, unknown> {
-  const normalized: Record<string, unknown> = { ...frontmatter };
-  for (const [external, canonical] of Object.entries(PROPERTY_KEY_ALIASES_REVERSE)) {
-    if (!(external in normalized)) {
-      continue;
-    }
-    if (!(canonical in normalized)) {
-      normalized[canonical] = normalized[external];
-    }
-    delete normalized[external];
-  }
-  return normalized;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function asNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function emptyNoteData(): NoteData {
-  return {
-    exists: false,
-    path: "",
-    content: "",
-    body: "",
-    frontmatter: {},
-    mtimeMs: 0
-  };
-}
 
 function mergeSyncSource(current: string, incoming: "plex" | "obsidian" | "both"): string {
   if (incoming === "both" || current === "both") {
