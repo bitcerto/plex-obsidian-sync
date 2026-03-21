@@ -160,6 +160,7 @@ export interface ManagedFrontmatter {
   atualizado_plex_em?: string;
   sincronizado_em?: string;
   sincronizado_por?: string;
+  minha_nota?: number | null;
 }
 
 export interface NoteData {

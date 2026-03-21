@@ -34,7 +34,8 @@ export const MANAGED_KEYS = [
   "ultima_visualizacao_plex",
   "atualizado_plex_em",
   "sincronizado_em",
-  "sincronizado_por"
+  "sincronizado_por",
+  "minha_nota"
 ] as const;
 
 export const SYNC_FIELDS = new Set<string>(["sincronizado_em", "sincronizado_por"]);
@@ -72,7 +73,8 @@ const PROPERTY_KEY_ALIASES_PT_BR: Record<string, string> = {
   ultima_visualizacao_plex: "ultima visualizacao plex",
   atualizado_plex_em: "atualizado plex em",
   sincronizado_em: "sincronizado em",
-  sincronizado_por: "sincronizado por"
+  sincronizado_por: "sincronizado por",
+  minha_nota: "minha nota"
 };
 
 const PROPERTY_KEY_ALIASES_EN_US: Record<string, string> = {
@@ -106,7 +108,8 @@ const PROPERTY_KEY_ALIASES_EN_US: Record<string, string> = {
   ultima_visualizacao_plex: "last viewed at plex",
   atualizado_plex_em: "updated at plex",
   sincronizado_em: "synced at",
-  sincronizado_por: "synced by"
+  sincronizado_por: "synced by",
+  minha_nota: "my rating"
 };
 
 const LEGACY_PROPERTY_KEY_ALIASES_PT_BR: Record<string, string> = {
