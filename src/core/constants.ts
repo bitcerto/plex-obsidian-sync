@@ -1,6 +1,6 @@
 import type { PlexSyncSettings } from "../types";
 
-export const PLUGIN_ID = "plex-obsidian-sync";
+export const PLUGIN_ID = "plex-sync";
 
 export const MANAGED_KEYS = [
   "plex_rating_key",

@@ -13,9 +13,9 @@ import { ReportModal } from "./ui/report-modal";
 import { PlexSyncSettingTab } from "./ui/settings-tab";
 
 const PRODUCT_NAME = "Plex Sync";
-const LOCAL_DEVICE_ID_KEY = "plex-obsidian-sync.local-device-id";
-const LOCAL_ACCOUNT_TOKEN_KEY = "plex-obsidian-sync.account-token";
-const LOCAL_PMS_TOKEN_KEY = "plex-obsidian-sync.pms-token";
+const LOCAL_DEVICE_ID_KEY = "plex-sync.local-device-id";
+const LOCAL_ACCOUNT_TOKEN_KEY = "plex-sync.account-token";
+const LOCAL_PMS_TOKEN_KEY = "plex-sync.pms-token";
 const DELETE_SYNC_DEBOUNCE_MS = 1200;
 const MODIFY_SYNC_DEBOUNCE_MS = 450;
 const MODIFY_IGNORE_AFTER_SYNC_MS = 900;
@@ -905,7 +905,7 @@ function generateClientIdentifier(): string {
   }
   const now = Date.now().toString(36);
   const rand = Math.random().toString(36).slice(2, 14);
-  return `plex-obsidian-sync-${now}-${rand}`;
+  return `plex-sync-${now}-${rand}`;
 }
 
 function getOrCreateLocalDeviceId(): string {
