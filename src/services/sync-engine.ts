@@ -164,6 +164,7 @@ export class SyncEngine {
       let client: SyncClient;
       let accountClientForDetails: PlexDiscoverClient | undefined;
       let items: PlexMediaItem[] = [];
+      let posterUrlBuilder: ((thumb: string | undefined) => string | undefined) | undefined;
 
       if (settings.authMode === "account_only") {
         if (!settings.plexAccountToken.trim()) {
@@ -181,6 +182,12 @@ export class SyncEngine {
         client = discoverClient;
         accountClientForDetails = discoverClient;
         report.resolvedServer = "Conta Plex";
+        const accountToken = settings.plexAccountToken.trim();
+        posterUrlBuilder = (thumb: string | undefined): string | undefined => {
+          if (!thumb) return undefined;
+          if (thumb.startsWith("http")) return thumb;
+          return accountToken ? `https://metadata.provider.plex.tv${thumb}?X-Plex-Token=${accountToken}` : undefined;
+        };
         report.resolvedConnectionUri = "https://discover.provider.plex.tv";
         removedByDeletedNotes = await syncDeletedAccountItems({
           client: discoverClient,
@@ -248,6 +255,11 @@ export class SyncEngine {
           this.logger
         );
         client = pmsClient;
+        posterUrlBuilder = (thumb: string | undefined): string | undefined => {
+          if (!thumb) return undefined;
+          if (thumb.startsWith("http")) return thumb;
+          return `${target.baseUrl}${thumb}?X-Plex-Token=${target.token}`;
+        };
         removedByDeletedNotes = await syncDeletedPmsItems({
           pmsClient,
           state,
@@ -354,7 +366,8 @@ export class SyncEngine {
             settings,
             client,
             preferredObsidianKeys.has(item.ratingKey),
-            preferredObsidianWatchedByKey.get(item.ratingKey)
+            preferredObsidianWatchedByKey.get(item.ratingKey),
+            posterUrlBuilder
           );
           if (result.noteCreated) {
             report.createdNotes += 1;
@@ -462,7 +475,8 @@ export class SyncEngine {
     settings: PlexSyncSettings,
     client: SyncClient,
     preferObsidianWhenStateMissing = false,
-    preferredObsidianWatched?: boolean
+    preferredObsidianWatched?: boolean,
+    posterUrlBuilder?: (thumb: string | undefined) => string | undefined
   ): Promise<SyncItemResult> {
     const noteRoot = normalizeVaultPath(settings.notesFolder);
     const previousRelPath = previousState?.notePath;
@@ -618,7 +632,7 @@ export class SyncEngine {
     }
 
     if (!note.exists) {
-      existingBody = defaultBody(item.title);
+      existingBody = defaultBody(item.title, posterUrlBuilder?.(item.thumb));
       noteCreated = true;
     }
 
@@ -663,7 +677,8 @@ export class SyncEngine {
         client,
         showWatchedOverride,
         logger: this.logger,
-        store: this.store
+        store: this.store,
+        posterUrlBuilder
       });
       if (hierarchy.noteChanged) {
         noteUpdated = true;

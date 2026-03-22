@@ -24,6 +24,7 @@ interface ShowHierarchySyncParams {
   showWatchedOverride?: boolean;
   logger: Logger;
   store: VaultStore;
+  posterUrlBuilder?: (thumb: string | undefined) => string | undefined;
 }
 
 export async function syncShowHierarchy(
@@ -37,7 +38,8 @@ export async function syncShowHierarchy(
     client,
     showWatchedOverride,
     logger,
-    store
+    store,
+    posterUrlBuilder
   } = params;
 
   const seasons = showItem.seasons || [];
@@ -254,7 +256,7 @@ export async function syncShowHierarchy(
     const refreshedSeasonNote = await store.readNote(normalizeVaultPath(noteRoot, seasonNoteRelative));
     const seasonBodySeed = refreshedSeasonNote.exists
       ? refreshedSeasonNote.body
-      : defaultSeasonBody(showItem.title, seasonFolderName);
+      : defaultSeasonBody(showItem.title, seasonFolderName, posterUrlBuilder?.(season.thumb));
     const seasonBody = applyManagedSeasonEpisodesSection(
       seasonBodySeed,
       season,
@@ -612,8 +614,9 @@ function buildEpisodeFileBaseName(episode: PlexSeasonInfo["episodes"][number]): 
   return sanitizedTitle;
 }
 
-function defaultSeasonBody(showTitle: string, seasonLabel: string): string {
-  return `# ${showTitle} - ${seasonLabel}\n\nNota sincronizada automaticamente com Plex.\n`;
+function defaultSeasonBody(showTitle: string, seasonLabel: string, posterUrl?: string): string {
+  const poster = posterUrl ? `![](${posterUrl})\n\n` : "";
+  return `${poster}# ${showTitle} - ${seasonLabel}\n\nNota sincronizada automaticamente com Plex.\n`;
 }
 
 function defaultEpisodeBody(

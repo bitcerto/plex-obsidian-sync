@@ -105,8 +105,9 @@ export function mergeFrontmatter(
   return merged;
 }
 
-export function defaultBody(title: string): string {
-  return `# ${title}\n\nNota sincronizada automaticamente com Plex.\n\nEdite o campo \`assistido\` no frontmatter para enviar alteracoes ao Plex.\n`;
+export function defaultBody(title: string, posterUrl?: string): string {
+  const poster = posterUrl ? `![](${posterUrl})\n\n` : "";
+  return `${poster}# ${title}\n\nNota sincronizada automaticamente com Plex.\n\nEdite o campo \`assistido\` no frontmatter para enviar alteracoes ao Plex.\n`;
 }
 
 export function applyManagedSeriesSection(body: string, item: PlexMediaItem): string {
