@@ -40,6 +40,8 @@ interface DiscoverSearchResponse {
 interface DiscoverMetadataResponse {
   MediaContainer?: {
     Metadata?: unknown;
+    totalSize?: number;
+    size?: number;
   };
 }
 
@@ -51,6 +53,7 @@ interface PlexHttpResponse {
 const DISCOVER_BASE = "https://discover.provider.plex.tv";
 const METADATA_BASE = "https://metadata.provider.plex.tv";
 const ACCOUNT_PAGE_SIZE = 100;
+const HIERARCHY_PAGE_SIZE = 200;
 const WATCHED_HISTORY_ENDPOINTS = [
   `${DISCOVER_BASE}/library/sections/history/all`,
   `${DISCOVER_BASE}/library/history/all`,
@@ -246,15 +249,10 @@ export class PlexDiscoverClient {
   }
 
   async getShowSeasons(showRatingKey: string): Promise<PlexSeasonInfo[]> {
-    const seasonsResponse = await this.requestJson<DiscoverMetadataResponse>(
-      "GET",
+    const seasonNodes = await this.listMetadataChildren(
       `${DISCOVER_BASE}/library/metadata/${encodeURIComponent(showRatingKey)}/children`,
       { includeUserState: "1" },
-      true
-    );
-
-    const seasonNodes = ensureArrayOfRecords(seasonsResponse?.MediaContainer?.Metadata).filter(
-      (entry) => asString(entry.type) === "season"
+      "season"
     );
     if (seasonNodes.length === 0) {
       return [];
@@ -267,15 +265,10 @@ export class PlexDiscoverClient {
           return undefined;
         }
 
-        const episodesResponse = await this.requestJson<DiscoverMetadataResponse>(
-          "GET",
+        const episodeNodes = await this.listMetadataChildren(
           `${DISCOVER_BASE}/library/metadata/${encodeURIComponent(seasonRatingKey)}/children`,
           { includeUserState: "1" },
-          true
-        );
-
-        const episodeNodes = ensureArrayOfRecords(episodesResponse?.MediaContainer?.Metadata).filter(
-          (entry) => asString(entry.type) === "episode"
+          "episode"
         );
 
         const episodes = episodeNodes
@@ -316,6 +309,60 @@ export class PlexDiscoverClient {
         }
         return a.title.localeCompare(b.title, "pt-BR");
       });
+  }
+
+  private async listMetadataChildren(
+    endpoint: string,
+    query: Record<string, string>,
+    expectedType?: string
+  ): Promise<Record<string, unknown>[]> {
+    const nodes: Record<string, unknown>[] = [];
+    let start = 0;
+    let knownTotal: number | undefined;
+
+    while (true) {
+      const response = await this.requestJson<DiscoverMetadataResponse>(
+        "GET",
+        endpoint,
+        {
+          ...query,
+          "X-Plex-Container-Start": String(start),
+          "X-Plex-Container-Size": String(HIERARCHY_PAGE_SIZE)
+        },
+        true
+      );
+
+      if (!response) {
+        break;
+      }
+
+      const container = response.MediaContainer;
+      const pageNodes = ensureArrayOfRecords(container?.Metadata);
+      const matchingNodes = expectedType
+        ? pageNodes.filter((entry) => asString(entry.type) === expectedType)
+        : pageNodes;
+      nodes.push(...matchingNodes);
+
+      if (knownTotal === undefined && typeof container?.totalSize === "number") {
+        knownTotal = container.totalSize;
+      }
+
+      start += pageNodes.length;
+
+      if (pageNodes.length === 0) {
+        break;
+      }
+
+      if (knownTotal !== undefined && start >= knownTotal) {
+        break;
+      }
+
+      if (knownTotal === undefined && pageNodes.length < HIERARCHY_PAGE_SIZE) {
+        break;
+      }
+    }
+
+    return nodes;
   }
 
   private async getUserState(ratingKey: string): Promise<Record<string, unknown> | undefined> {

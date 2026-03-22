@@ -33,8 +33,10 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   private watchedSignatureByPath = new Map<string, string>();
   private pendingPreferredObsidianKeys = new Set<string>();
   private pendingPreferredObsidianWatchedByKey = new Map<string, boolean>();
+  private pendingTargetOnlyRatingKeys = new Set<string>();
   private pendingDeletedRatingKeys = new Set<string>();
   private loginInProgress = false;
+  private pendingRetrySync: (() => void) | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -420,6 +422,23 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       return null;
     }
 
+    const isEventSync =
+      reason === "note-delete" || reason === "note-modify" || reason === "note-create";
+
+    if (this.syncingNow && isEventSync) {
+      this.pendingRetrySync = () => {
+        void this.executeSync(
+          reason,
+          forceFullRebuild,
+          preferredObsidianKeys,
+          preferredObsidianWatchedByKey,
+          targetRatingKeys,
+          deletedRatingKeys
+        );
+      };
+      return null;
+    }
+
     this.syncingNow = true;
     try {
       const result = await this.engine.runSync({
@@ -436,6 +455,15 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     } finally {
       this.syncingNow = false;
       this.ignoreModifySyncUntil = Date.now() + MODIFY_IGNORE_AFTER_SYNC_MS;
+      this.drainPendingRetrySync();
+    }
+  }
+
+  private drainPendingRetrySync(): void {
+    const pending = this.pendingRetrySync;
+    this.pendingRetrySync = null;
+    if (pending) {
+      window.setTimeout(pending, 500);
     }
   }
 
@@ -762,14 +790,17 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       const preferredWatchedByKey = Object.fromEntries(
         Array.from(this.pendingPreferredObsidianWatchedByKey.entries())
       );
+      const targetOnlyKeys = Array.from(this.pendingTargetOnlyRatingKeys);
       this.pendingPreferredObsidianKeys.clear();
       this.pendingPreferredObsidianWatchedByKey.clear();
+      this.pendingTargetOnlyRatingKeys.clear();
+      const allTargetKeys = [...preferredKeys, ...targetOnlyKeys];
       void this.executeSync(
         "note-modify",
         false,
         preferredKeys,
         preferredWatchedByKey,
-        preferredKeys
+        allTargetKeys
       );
     }, MODIFY_SYNC_DEBOUNCE_MS);
   }
@@ -786,7 +817,12 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
     if (previousSignature && previousSignature !== nextSignature) {
       const ratingKey = extractRatingKeyFromSignature(nextSignature);
-      if (ratingKey) {
+      const serieRatingKey = extractSerieRatingKeyFromSignature(nextSignature);
+      if (serieRatingKey) {
+        // Season/episode note: target the parent show for syncShowHierarchy
+        // but do NOT mark it as preferred so show-level watched is not forced
+        this.pendingTargetOnlyRatingKeys.add(serieRatingKey);
+      } else if (ratingKey) {
         this.pendingPreferredObsidianKeys.add(ratingKey);
         const watched = extractWatchedFromSignature(nextSignature);
         if (typeof watched === "boolean") {
@@ -965,7 +1001,11 @@ function buildWatchedSignature(markdown: string): string | undefined {
   const watched = parseOptionalBoolValue(normalized.assistido);
   const watchedValue = typeof watched === "boolean" ? (watched ? "1" : "0") : "u";
   const checkboxState = type === "season" ? extractSeasonCheckboxSnapshot(parsed.content) : "";
-  return `${type}|${ratingKey}|${watchedValue}|${checkboxState}`;
+  const serieRatingKey =
+    (type === "season" || type === "episode")
+      ? asNonEmptyStringValue(normalized.serie_rating_key) ?? ""
+      : "";
+  return `${type}|${ratingKey}|${watchedValue}|${checkboxState}|${serieRatingKey}`;
 }
 
 function extractRatingKeyFromSignature(signature: string): string | undefined {
@@ -975,6 +1015,13 @@ function extractRatingKeyFromSignature(signature: string): string | undefined {
   }
   const ratingKey = parts[1].trim();
   return ratingKey.length > 0 ? ratingKey : undefined;
+}
+
+function extractSerieRatingKeyFromSignature(signature: string): string | undefined {
+  const parts = signature.split("|");
+  if (parts.length < 5) return undefined;
+  const key = parts[4].trim();
+  return key.length > 0 ? key : undefined;
 }
 
 function extractWatchedFromSignature(signature: string): boolean | undefined {

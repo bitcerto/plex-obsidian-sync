@@ -42,7 +42,7 @@ describe("sync-core", () => {
     const existing = {
       assistido: false,
       tags: ["filme", "acao"],
-      minha_nota: "ok"
+      nota_pessoal: "ok"
     };
 
     const managed = {
@@ -53,7 +53,7 @@ describe("sync-core", () => {
 
     const merged = mergeFrontmatter(existing, managed);
     expect(merged.assistido).toBe(true);
-    expect(merged.minha_nota).toBe("ok");
+    expect(merged.nota_pessoal).toBe("ok");
     expect(merged.tags).toEqual(["filme", "acao"]);
   });
 

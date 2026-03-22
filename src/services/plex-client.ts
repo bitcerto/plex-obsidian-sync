@@ -18,6 +18,8 @@ interface PlexHttpResponse {
   text: string;
 }
 
+const HIERARCHY_PAGE_SIZE = 200;
+
 export class PmsClient {
   private baseUrl: string;
   private token: string;
@@ -49,12 +51,9 @@ export class PmsClient {
   }
 
   async getShowSeasons(showRatingKey: string): Promise<PlexSeasonInfo[]> {
-    const seasonsXml = await this.requestXml(
-      "GET",
-      `/library/metadata/${encodeURIComponent(showRatingKey)}/children`
-    );
-    const seasonNodes = parseMediaNodes(seasonsXml).filter(
-      (entry) => asString(entry.type) === "season"
+    const seasonNodes = await this.listChildrenNodes(
+      `/library/metadata/${encodeURIComponent(showRatingKey)}/children`,
+      "season"
     );
 
     const seasons = await Promise.all(
@@ -64,12 +63,9 @@ export class PmsClient {
           return undefined;
         }
 
-        const episodesXml = await this.requestXml(
-          "GET",
-          `/library/metadata/${encodeURIComponent(seasonRatingKey)}/children`
-        );
-        const episodeNodes = parseMediaNodes(episodesXml).filter(
-          (entry) => asString(entry.type) === "episode"
+        const episodeNodes = await this.listChildrenNodes(
+          `/library/metadata/${encodeURIComponent(seasonRatingKey)}/children`,
+          "episode"
         );
 
         const episodes = episodeNodes
@@ -109,6 +105,47 @@ export class PmsClient {
         }
         return a.title.localeCompare(b.title, "pt-BR");
       });
+  }
+
+  private async listChildrenNodes(
+    path: string,
+    expectedType?: string
+  ): Promise<Record<string, unknown>[]> {
+    const nodes: Record<string, unknown>[] = [];
+    let start = 0;
+    let knownTotal: number | undefined;
+
+    while (true) {
+      const xml = await this.requestXml("GET", path, {
+        "X-Plex-Container-Start": String(start),
+        "X-Plex-Container-Size": String(HIERARCHY_PAGE_SIZE)
+      });
+      const page = parseMediaNodes(xml);
+      const matchingNodes = expectedType
+        ? page.nodes.filter((entry) => asString(entry.type) === expectedType)
+        : page.nodes;
+      nodes.push(...matchingNodes);
+
+      if (knownTotal === undefined && typeof page.totalSize === "number") {
+        knownTotal = page.totalSize;
+      }
+
+      start += page.nodes.length;
+
+      if (page.nodes.length === 0) {
+        break;
+      }
+
+      if (knownTotal !== undefined && start >= knownTotal) {
+        break;
+      }
+
+      if (knownTotal === undefined && page.nodes.length < HIERARCHY_PAGE_SIZE) {
+        break;
+      }
+    }
+
+    return nodes;
   }
 
   private async requestXml(
@@ -198,7 +235,12 @@ const parser = new XMLParser({
   trimValues: true
 });
 
-function parseMediaNodes(xml: string): Record<string, unknown>[] {
+interface ParsedMediaPage {
+  nodes: Record<string, unknown>[];
+  totalSize?: number;
+}
+
+function parseMediaNodes(xml: string): ParsedMediaPage {
   const root = parser.parse(xml) as Record<string, unknown>;
   const media =
     root.MediaContainer && typeof root.MediaContainer === "object"
@@ -207,7 +249,8 @@ function parseMediaNodes(xml: string): Record<string, unknown>[] {
 
   const videos = ensureArray(media.Video);
   const directories = ensureArray(media.Directory);
-  return [...videos, ...directories];
+  const totalSize = typeof media.totalSize === "number" ? media.totalSize : undefined;
+  return { nodes: [...videos, ...directories], totalSize };
 }
 
 function ensureArray(value: unknown): Record<string, unknown>[] {

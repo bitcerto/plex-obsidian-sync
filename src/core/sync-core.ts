@@ -6,16 +6,16 @@ const SERIES_SECTION_START = "<!-- plex-series-details:start -->";
 const SERIES_SECTION_END = "<!-- plex-series-details:end -->";
 
 export function plexWatched(item: PlexMediaItem): boolean {
-  if (typeof item.viewCount === "number") {
-    return item.viewCount > 0;
-  }
-
   if (
     typeof item.leafCount === "number" &&
     typeof item.viewedLeafCount === "number" &&
     item.leafCount > 0
   ) {
     return item.viewedLeafCount >= item.leafCount;
+  }
+
+  if (typeof item.viewCount === "number") {
+    return item.viewCount > 0;
   }
 
   return false;
@@ -65,7 +65,7 @@ export function buildManagedMetadata(params: {
     assistido: watched,
     ultima_visualizacao_plex: epochSecondsToIso(item.lastViewedAt),
     atualizado_plex_em: epochSecondsToIso(item.updatedAt),
-    minha_nota: typeof existingMeta.minha_nota === "number" ? existingMeta.minha_nota : null
+    minha_nota: typeof existingMeta.minha_nota === "number" ? existingMeta.minha_nota : ""
   };
   if (!noteExists || syncSource !== "none") {
     base.sincronizado_em = nowIso();
@@ -91,7 +91,7 @@ export function mergeFrontmatter(
 
   for (const key of MANAGED_KEYS) {
     const value = managedRecord[key];
-    if (value !== undefined && (value !== null || key === "minha_nota") && (value !== "" || key === "pausa")) {
+    if (value !== undefined && value !== null && (value !== "" || key === "pausa" || key === "minha_nota")) {
       merged[key] = value;
     }
   }
