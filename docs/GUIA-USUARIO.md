@@ -103,14 +103,14 @@ Passos:
 
 ## 7) Comandos disponiveis
 
-1. `Plex Sync: Sync Now`
-2. `Plex Sync: Force Full Rebuild`
-3. `Plex Sync: Reset Local State`
-4. `Plex Sync: Show Last Sync Report`
-5. `Plex Sync: Login with Plex Account`
-6. `Plex Sync: Refresh Plex Servers`
-7. `Plex Sync: Logout Plex Account`
-8. `Plex Sync: Search and Add to Watchlist` (modo `account_only`)
+1. `Plex Sync: Sync Now` — sincronizacao incremental (processa apenas itens alterados desde o ultimo sync).
+2. `Plex Sync: Force Full Rebuild` — apaga o estado local e faz varredura completa de todos os itens. Use quando as notas estiverem dessincronizadas, apos mudar a pasta de notas, ou apos corrupção do estado.
+3. `Plex Sync: Reset Local State` — apaga o estado local sem disparar sync imediato.
+4. `Plex Sync: Show Last Sync Report` — exibe o relatorio do ultimo sync.
+5. `Plex Sync: Login with Plex Account` — inicia fluxo de login via PIN.
+6. `Plex Sync: Refresh Plex Servers` — atualiza lista de servidores vinculados a conta (modo `hybrid_account`).
+7. `Plex Sync: Logout Plex Account` — desconecta a conta Plex.
+8. `Plex Sync: Search and Add to Watchlist` — pesquisa no catalogo Plex e adiciona a watchlist (modo `account_only`).
 
 ## 8) Como a sincronizacao funciona
 
@@ -132,18 +132,20 @@ Passos:
 
 Ao apagar uma nota dentro da pasta configurada, o plugin agenda sync por evento (debounce de ~1.2s).
 
+Resultado por modo:
+
+1. `account_only`: tenta remover da watchlist e limpar status assistido na conta Plex.
+2. `hybrid_account`: limpa `assistido` no PMS; se houver conta Plex valida, tambem tenta remover da watchlist da conta. Nao apaga filme/serie da biblioteca PMS.
+3. `manual`: limpa `assistido` no PMS. Nao apaga filme/serie da biblioteca PMS.
+
+> **Nota:** ao apagar uma nota, o plugin limpa o status assistido e a watchlist. O feed de historico de atividade da conta Plex (visivel em `community.plex.tv`) **nao e removido**. O "On Deck" (continuar assistindo) e afetado indiretamente, pois depende do status assistido.
+
 ### 8.4 Eventos que disparam sync
 
 1. Criacao de nota gerenciada em `${notesFolder}`.
 2. Edicao de nota gerenciada (ex.: `assistido`).
 3. Exclusao de nota gerenciada.
 4. Comando manual `Plex Sync: Sync Now`.
-
-Resultado por modo:
-
-1. `account_only`: tenta remover da watchlist e limpar status assistido na conta Plex.
-2. `hybrid_account`: limpa `assistido` no PMS; se houver conta Plex valida, tambem tenta remover da watchlist da conta. Nao apaga filme/serie da biblioteca PMS.
-3. `manual`: limpa `assistido` no PMS. Nao apaga filme/serie da biblioteca PMS.
 
 ## 9) Seguranca
 

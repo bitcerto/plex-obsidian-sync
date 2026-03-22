@@ -99,14 +99,14 @@ Steps:
 
 ## 7) Available commands
 
-1. `Plex Sync: Sync Now`
-2. `Plex Sync: Force Full Rebuild`
-3. `Plex Sync: Reset Local State`
-4. `Plex Sync: Show Last Sync Report`
-5. `Plex Sync: Login with Plex Account`
-6. `Plex Sync: Refresh Plex Servers`
-7. `Plex Sync: Logout Plex Account`
-8. `Plex Sync: Search and Add to Watchlist` (`account_only` mode only)
+1. `Plex Sync: Sync Now` — incremental sync (processes only items changed since the last sync).
+2. `Plex Sync: Force Full Rebuild` — deletes local state and performs a full scan of all items. Use when notes are out of sync, after changing the notes folder, or after state corruption.
+3. `Plex Sync: Reset Local State` — deletes local state without triggering an immediate sync.
+4. `Plex Sync: Show Last Sync Report` — displays the last sync report.
+5. `Plex Sync: Login with Plex Account` — starts the PIN-based login flow.
+6. `Plex Sync: Refresh Plex Servers` — updates the list of servers linked to your account (`hybrid_account` mode).
+7. `Plex Sync: Logout Plex Account` — disconnects the Plex account.
+8. `Plex Sync: Search and Add to Watchlist` — searches the Plex catalogue and adds to watchlist (`account_only` mode only).
 
 ## 8) How synchronization works
 
@@ -128,18 +128,20 @@ Steps:
 
 When a note inside the configured folder is deleted, the plugin schedules a sync event (debounce of ~1.2s).
 
+Result per mode:
+
+1. `account_only`: attempts to remove from watchlist and clear watched status on the Plex account.
+2. `hybrid_account`: clears `watched` on the PMS; if a valid Plex account is present, also attempts to remove from the account watchlist. Does not delete movies/shows from the PMS library.
+3. `manual`: clears `watched` on the PMS. Does not delete movies/shows from the PMS library.
+
+> **Note:** the Plex account activity feed (visible at `community.plex.tv`) is **not removed** when a note is deleted. Only watched status and watchlist are updated. "On Deck" (continue watching) is indirectly affected since it depends on watched status.
+
 ### 8.4 Events that trigger sync
 
 1. Creation of a managed note inside `${notesFolder}`.
 2. Edit of a managed note (e.g.: `watched`).
 3. Deletion of a managed note.
 4. Manual command `Plex Sync: Sync Now`.
-
-Result per mode:
-
-1. `account_only`: attempts to remove from watchlist and clear watched status on the Plex account.
-2. `hybrid_account`: clears `watched` on the PMS; if a valid Plex account is present, also attempts to remove from the account watchlist. Does not delete movies/shows from the PMS library.
-3. `manual`: clears `watched` on the PMS. Does not delete movies/shows from the PMS library.
 
 ## 9) Frontmatter fields
 
