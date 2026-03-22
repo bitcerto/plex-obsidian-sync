@@ -21,14 +21,14 @@ export class PlexSyncSettingTab extends PluginSettingTab {
   private host: SettingsHost;
 
   constructor(app: App, host: SettingsHost) {
-    super(app, host as never);
+    super(app, host as unknown as import("obsidian").Plugin);
     this.host = host;
   }
 
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Plex Sync" });
+    new Setting(containerEl).setName("Plex Sync").setHeading();
 
     this.renderAuthSettings(containerEl);
     this.renderSyncSettings(containerEl);
@@ -36,7 +36,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
   }
 
   private renderAuthSettings(containerEl: HTMLElement): void {
-    containerEl.createEl("h3", { text: "Autenticação" });
+    new Setting(containerEl).setName("Autenticação").setHeading();
 
     new Setting(containerEl)
       .setName("Modo de autenticação")
@@ -233,7 +233,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
   }
 
   private renderSyncSettings(containerEl: HTMLElement): void {
-    containerEl.createEl("h3", { text: "Sincronização" });
+    new Setting(containerEl).setName("Sincronização").setHeading();
 
     new Setting(containerEl)
       .setName("Bibliotecas")
@@ -304,7 +304,7 @@ export class PlexSyncSettingTab extends PluginSettingTab {
   }
 
   private renderAdvancedSettings(containerEl: HTMLElement): void {
-    containerEl.createEl("h3", { text: "Avançado" });
+    new Setting(containerEl).setName("Avançado").setHeading();
 
     new Setting(containerEl)
       .setName("Sincronizar somente online")

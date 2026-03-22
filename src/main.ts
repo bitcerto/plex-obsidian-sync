@@ -304,64 +304,64 @@ export default class PlexObsidianSyncPlugin extends Plugin {
 
   private registerCommands(): void {
     this.addCommand({
-      id: "plex-sync-login-with-plex-account",
-      name: "Plex Sync: Login with Plex Account",
+      id: "login-with-plex-account",
+      name: "Login with Plex account",
       callback: () => {
         void this.loginWithPlexAccount();
       }
     });
 
     this.addCommand({
-      id: "plex-sync-refresh-plex-servers",
-      name: "Plex Sync: Refresh Plex Servers",
+      id: "refresh-plex-servers",
+      name: "Refresh Plex servers",
       callback: () => {
         void this.refreshPlexServers();
       }
     });
 
     this.addCommand({
-      id: "plex-sync-now",
-      name: "Plex Sync: Sync Now",
+      id: "sync-now",
+      name: "Sync now",
       callback: () => {
         void this.executeSync("manual");
       }
     });
 
     this.addCommand({
-      id: "plex-sync-force-full-rebuild",
-      name: "Plex Sync: Force Full Rebuild",
+      id: "force-full-rebuild",
+      name: "Force full rebuild",
       callback: () => {
         void this.executeSync("force-full-rebuild", true);
       }
     });
 
     this.addCommand({
-      id: "plex-sync-reset-local-state",
-      name: "Plex Sync: Reset Local State",
+      id: "reset-local-state",
+      name: "Reset local state",
       callback: () => {
         void this.resetLocalState();
       }
     });
 
     this.addCommand({
-      id: "plex-sync-show-last-report",
-      name: "Plex Sync: Show Last Sync Report",
+      id: "show-last-report",
+      name: "Show last sync report",
       callback: () => {
         void this.showLastReport();
       }
     });
 
     this.addCommand({
-      id: "plex-sync-search-add-watchlist",
-      name: "Plex Sync: Search and Add to Watchlist",
+      id: "search-add-watchlist",
+      name: "Search and add to watchlist",
       callback: () => {
         void this.openDiscoverSearchModal();
       }
     });
 
     this.addCommand({
-      id: "plex-sync-logout-plex-account",
-      name: "Plex Sync: Logout Plex Account",
+      id: "logout-plex-account",
+      name: "Logout Plex account",
       callback: () => {
         void this.logoutPlexAccount();
       }
@@ -498,7 +498,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     new ReportModal(this.app, report).open();
   }
 
-  private async openDiscoverSearchModal(): Promise<void> {
+  private openDiscoverSearchModal(): void {
     if (this.settings.authMode !== "account_only") {
       new Notice("Use o modo 'Conta Plex (sem servidor)' para buscar e adicionar via conta.");
       return;
@@ -1089,7 +1089,8 @@ function extractAccountIdentity(user: unknown): string {
 
 function detectObsidianLocale(): string {
   try {
-    const appLocale = String((window as unknown as Record<string, unknown>)["appLocale"] || "").trim();
+    const rawAppLocale = (window as unknown as Record<string, unknown>)["appLocale"];
+    const appLocale = typeof rawAppLocale === "string" ? rawAppLocale.trim() : "";
     if (appLocale.length > 0) {
       return appLocale;
     }
@@ -1100,7 +1101,8 @@ function detectObsidianLocale(): string {
     const appObject = (window as unknown as Record<string, unknown>)["app"] as
       | Record<string, unknown>
       | undefined;
-    const localeFromApp = String(appObject?.["locale"] || "").trim();
+    const rawLocale = appObject?.["locale"];
+    const localeFromApp = typeof rawLocale === "string" ? rawLocale.trim() : "";
     if (localeFromApp.length > 0) {
       return localeFromApp;
     }

@@ -1,0 +1,145 @@
+/* Plex Sync - styles */
+
+/* discover-search-modal */
+.plex-sync-modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 4px;
+}
+
+.plex-sync-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plex-sync-search-row input {
+  flex: 1;
+}
+
+.plex-sync-search-row button {
+  min-width: 92px;
+}
+
+.plex-sync-search-help {
+  font-size: 12px;
+  opacity: 0.85;
+  line-height: 1.35;
+}
+
+.plex-sync-search-results {
+  max-height: 55vh;
+  overflow-y: auto;
+  padding-right: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.plex-sync-search-item {
+  display: grid;
+  grid-template-columns: 72px 1fr auto;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.12);
+}
+
+.plex-sync-poster-wrap {
+  width: 72px;
+  height: 108px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--background-modifier-hover);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--background-modifier-border);
+  grid-row: 1 / 3;
+}
+
+.plex-sync-poster-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.plex-sync-item-header {
+  grid-column: 2 / 4;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.plex-sync-item-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.plex-sync-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.plex-sync-title-line strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plex-sync-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  opacity: 0.9;
+  flex-shrink: 0;
+}
+
+.plex-sync-original-title {
+  font-size: 12px;
+  opacity: 0.82;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plex-sync-add-button {
+  min-width: 98px;
+  flex-shrink: 0;
+}
+
+.plex-sync-synopsis {
+  grid-column: 2 / 4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  opacity: 0.85;
+  line-height: 1.35;
+  overflow: hidden;
+}
+
+.plex-sync-poster-fallback {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  opacity: 0.75;
+}
+
+/* report-modal */
+.plex-sync-report-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 60vh;
+  overflow: auto;
+}

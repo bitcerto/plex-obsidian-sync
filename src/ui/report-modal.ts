@@ -14,12 +14,8 @@ export class ReportModal extends Modal {
     contentEl.empty();
     this.setTitle("Plex Sync - Last Report");
 
-    const pre = contentEl.createEl("pre");
+    const pre = contentEl.createEl("pre", { cls: "plex-sync-report-pre" });
     pre.setText(JSON.stringify(this.report, null, 2));
-    pre.style.whiteSpace = "pre-wrap";
-    pre.style.wordBreak = "break-word";
-    pre.style.maxHeight = "60vh";
-    pre.style.overflow = "auto";
   }
 
   onClose(): void {

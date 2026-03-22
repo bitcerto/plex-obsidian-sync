@@ -10,7 +10,7 @@ export class Logger {
   }
 
   info(message: string, context?: unknown): void {
-    console.log(`[PlexSync] ${message}`, context ?? "");
+    console.debug(`[PlexSync] ${message}`, context ?? "");
   }
 
   warn(message: string, context?: unknown): void {
