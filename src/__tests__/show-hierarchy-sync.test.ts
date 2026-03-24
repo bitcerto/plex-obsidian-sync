@@ -247,6 +247,51 @@ describe("show-hierarchy-sync", () => {
     expect(updatedSeason2.frontmatter.episodios_assistidos).toBe(0);
   });
 
+  it("faz fallback para episodios da temporada quando o client nao suporta escrita direta de temporada", async () => {
+    const noteRoot = "Media-Plex";
+    const showFolder = "Series/Dark";
+    const store = new FakeVaultStore({
+      [`${noteRoot}/${showFolder}/Temporada 1/- Temporada 1.md`]: renderNote(
+        {
+          tipo: "season",
+          plex_rating_key: "season-1",
+          serie_rating_key: "show-1",
+          assistido: true
+        },
+        "# Temporada 1\n"
+      ),
+      [`${noteRoot}/${showFolder}/Temporada 2/- Temporada 2.md`]: renderNote(
+        {
+          tipo: "season",
+          plex_rating_key: "season-2",
+          serie_rating_key: "show-1",
+          assistido: false
+        },
+        "# Temporada 2\n"
+      )
+    });
+    const app = buildApp(store);
+    const markWatched = vi.fn(async () => {});
+
+    await syncShowHierarchy({
+      app: app as never,
+      noteRoot,
+      showNoteRelativePath: `${showFolder}/Dark.md`,
+      showItem: buildShowItem(),
+      client: {
+        markWatched,
+        supportsSeasonWatchedWrites: false
+      },
+      overrideSeasonRatingKeys: new Set(["season-1"]),
+      logger: new Logger(false),
+      store: store as never
+    });
+
+    expect(markWatched).toHaveBeenCalledTimes(2);
+    expect(markWatched).toHaveBeenNthCalledWith(1, "ep-1", true);
+    expect(markWatched).toHaveBeenNthCalledWith(2, "ep-2", true);
+  });
+
   it("nao dispara updates por episodio quando o show ja foi marcado no nivel da serie", async () => {
     const noteRoot = "Media-Plex";
     const showFolder = "Series/Dark";

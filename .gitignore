@@ -2,3 +2,4 @@ CLAUDE.md
 node_modules/
 main.js
 *.map
+data.json

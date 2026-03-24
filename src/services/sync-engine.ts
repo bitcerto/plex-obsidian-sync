@@ -68,6 +68,7 @@ interface SyncItemResult {
 
 interface SyncClient {
   markWatched(ratingKey: string, watched: boolean): Promise<void>;
+  supportsSeasonWatchedWrites?: boolean;
   setWatchlisted?: (ratingKey: string, watchlisted: boolean) => Promise<void>;
   getShowSeasons?: (showRatingKey: string) => Promise<PlexSeasonInfo[]>;
 }

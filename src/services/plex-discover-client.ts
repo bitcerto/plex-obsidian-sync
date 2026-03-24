@@ -62,6 +62,7 @@ const WATCHED_HISTORY_ENDPOINTS = [
 ] as const;
 
 export class PlexDiscoverClient {
+  readonly supportsSeasonWatchedWrites = false;
   private accountToken: string;
   private clientIdentifier: string;
   private product: string;
@@ -220,20 +221,25 @@ export class PlexDiscoverClient {
 
   async markWatched(ratingKey: string, watched: boolean): Promise<void> {
     const action = watched ? "scrobble" : "unscrobble";
-    const paramsCandidates = buildWatchedActionParamCandidates(ratingKey);
+    this.logger.debug("aplicando assistido via Plex Discover metadata action", {
+      ratingKey,
+      watched,
+      endpoint: `${METADATA_BASE}/actions/${action}`,
+      params: buildWatchedActionParams(ratingKey)
+    });
+    await this.requestAction(
+      `${METADATA_BASE}/actions/${action}`,
+      buildWatchedActionParams(ratingKey)
+    );
 
-    for (const params of paramsCandidates) {
-      await this.requestJson(
-        "PUT",
-        `${DISCOVER_BASE}/actions/${action}`,
-        params,
-        false
-      );
-
-      const confirmed = await this.confirmWatchedState(ratingKey, watched);
-      if (confirmed === true || confirmed === undefined) {
-        return;
-      }
+    const confirmed = await this.confirmWatchedState(ratingKey, watched);
+    this.logger.debug("confirmacao assistido Plex Discover", {
+      ratingKey,
+      watched,
+      confirmed
+    });
+    if (confirmed === true || confirmed === undefined) {
+      return;
     }
 
     throw new Error(
@@ -754,6 +760,18 @@ export class PlexDiscoverClient {
     }
   }
 
+  private async requestAction(
+    baseUrl: string,
+    query: Record<string, string>
+  ): Promise<void> {
+    const response = await this.request("PUT", baseUrl, query);
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(
+        `Erro Discover PUT ${baseUrl}: status=${response.status} body=${truncate(response.text)}`
+      );
+    }
+  }
+
   private async request(
     method: "GET" | "PUT",
     baseUrl: string,
@@ -899,28 +917,11 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
   });
 }
 
-function buildWatchedActionParamCandidates(ratingKey: string): Array<Record<string, string>> {
-  const variants: Array<Record<string, string>> = [
-    { key: ratingKey },
-    { ratingKey },
-    { identifier: ratingKey },
-    { key: ratingKey, ratingKey }
-  ];
-
-  const unique = new Set<string>();
-  const result: Array<Record<string, string>> = [];
-  for (const entry of variants) {
-    const normalized = Object.keys(entry)
-      .sort()
-      .map((key) => `${key}=${entry[key]}`)
-      .join("&");
-    if (unique.has(normalized)) {
-      continue;
-    }
-    unique.add(normalized);
-    result.push(entry);
-  }
-  return result;
+function buildWatchedActionParams(ratingKey: string): Record<string, string> {
+  return {
+    key: ratingKey,
+    identifier: "com.plexapp.plugins.library"
+  };
 }
 
 function inferWatchedFromUserState(state: Record<string, unknown> | undefined): boolean | undefined {

@@ -8,6 +8,7 @@ import { VaultStore } from "./vault-store";
 
 export interface ShowHierarchySyncClient {
   markWatched(ratingKey: string, watched: boolean): Promise<void>;
+  supportsSeasonWatchedWrites?: boolean;
 }
 
 export interface ShowHierarchySyncResult {
@@ -138,7 +139,8 @@ export async function syncShowHierarchy(
         episode.watched = showWatchedOverride;
       }
     } else if (typeof seasonAssistidoOverride === "boolean") {
-      if (seasonAssistidoOverride !== seasonWatchedFromPlex) {
+      const canWriteSeasonDirectly = client.supportsSeasonWatchedWrites !== false;
+      if (canWriteSeasonDirectly && seasonAssistidoOverride !== seasonWatchedFromPlex) {
         try {
           await client.markWatched(season.ratingKey, seasonAssistidoOverride);
           plexUpdated = true;
@@ -149,6 +151,35 @@ export async function syncShowHierarchy(
             error: String(error)
           });
         }
+      } else if (!canWriteSeasonDirectly) {
+        const pendingEpisodeUpdates = season.episodes
+          .map((episode) => {
+            const desiredWatched = episodeDesiredWatched.get(episode.ratingKey);
+            if (typeof desiredWatched !== "boolean" || desiredWatched === episode.watched) {
+              return undefined;
+            }
+            return { episode, desiredWatched };
+          })
+          .filter(
+            (entry): entry is { episode: PlexSeasonInfo["episodes"][number]; desiredWatched: boolean } =>
+              entry !== undefined
+          );
+
+        await Promise.all(
+          pendingEpisodeUpdates.map(async ({ episode, desiredWatched }) => {
+            try {
+              await client.markWatched(episode.ratingKey, desiredWatched);
+              episode.watched = desiredWatched;
+              plexUpdated = true;
+            } catch (error) {
+              logger.debug("falha ao aplicar fallback episodio-a-episodio da temporada no Plex", {
+                ratingKey: episode.ratingKey,
+                desiredWatched,
+                error: String(error)
+              });
+            }
+          })
+        );
       }
 
       for (const episode of season.episodes) {

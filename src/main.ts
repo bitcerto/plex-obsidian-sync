@@ -831,7 +831,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     const previousSignature = this.watchedSignatureByPath.get(filePath);
     this.watchedSignatureByPath.set(filePath, nextSignature);
 
-    if (previousSignature && previousSignature !== nextSignature) {
+    if (previousSignature !== nextSignature) {
       const ratingKey = extractRatingKeyFromSignature(nextSignature);
       const serieRatingKey = extractSerieRatingKeyFromSignature(nextSignature);
       if (serieRatingKey) {
@@ -839,21 +839,17 @@ export default class PlexObsidianSyncPlugin extends Plugin {
         // but do NOT mark it as preferred so show-level watched is not forced
         this.pendingTargetOnlyRatingKeys.add(serieRatingKey);
         const noteType = extractTypeFromSignature(nextSignature);
-        const watchedChanged =
-          extractWatchedFromSignature(previousSignature) !== extractWatchedFromSignature(nextSignature);
         const seasonCheckboxChanged =
           noteType === "season" &&
           extractSeasonCheckboxSnapshotFromSignature(previousSignature) !==
             extractSeasonCheckboxSnapshotFromSignature(nextSignature);
-        if (ratingKey && watchedChanged) {
-          // For season notes: mark season for assistido override propagation
-          if (noteType === "season") {
-            this.pendingOverrideSeasonRatingKeys.add(ratingKey);
-          }
-          // For episode notes: mark episode so its assistido is read during sync
-          if (noteType === "episode") {
-            this.pendingOverrideEpisodeRatingKeys.add(ratingKey);
-          }
+        if (ratingKey && noteType === "season") {
+          // Any season-note modification should re-evaluate that specific season.
+          this.pendingOverrideSeasonRatingKeys.add(ratingKey);
+        }
+        if (ratingKey && noteType === "episode") {
+          // Any episode-note modification should re-evaluate that specific episode.
+          this.pendingOverrideEpisodeRatingKeys.add(ratingKey);
         }
         if (ratingKey && noteType === "season" && seasonCheckboxChanged) {
           this.pendingOverrideSeasonRatingKeys.add(ratingKey);

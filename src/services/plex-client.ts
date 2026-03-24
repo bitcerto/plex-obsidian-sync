@@ -21,6 +21,7 @@ interface PlexHttpResponse {
 const HIERARCHY_PAGE_SIZE = 200;
 
 export class PmsClient {
+  readonly supportsSeasonWatchedWrites = true;
   private baseUrl: string;
   private token: string;
   private timeoutSeconds: number;
