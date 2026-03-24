@@ -20,7 +20,7 @@ Esse guia cobre instalacao, configuracao por modo, comandos, sincronizacao, segu
 ## Build rapido
 
 ```bash
-cd /home/lucas/Projetos/plex-obsidian-sync/plex-sync-obsdian-plugin
+cd /home/lucas/Projetos/obsidian-plex-sync
 npm install
 npm run typecheck
 npm run test
@@ -30,8 +30,8 @@ npm run build
 ## Instalacao manual no Obsidian
 
 ```bash
-mkdir -p "/caminho/do/vault/.obsidian/plugins/plex-obsidian-sync"
-cp manifest.json main.js versions.json "/caminho/do/vault/.obsidian/plugins/plex-obsidian-sync/"
+mkdir -p "/caminho/do/vault/.obsidian/plugins/plex-sync"
+cp manifest.json main.js versions.json "/caminho/do/vault/.obsidian/plugins/plex-sync/"
 ```
 
 Depois no Obsidian:

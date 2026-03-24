@@ -22,7 +22,7 @@ Ele sincroniza:
 ## 3) Requisitos
 
 1. Obsidian com Community Plugins habilitado.
-2. Plugin instalado em `.obsidian/plugins/plex-obsidian-sync`.
+2. Plugin instalado em `.obsidian/plugins/plex-sync`.
 3. Acesso a internet para login com conta Plex.
 4. Para modos com servidor, acesso de rede ao PMS.
 
@@ -31,7 +31,7 @@ Ele sincroniza:
 ### 4.1 Build
 
 ```bash
-cd /home/lucas/Projetos/plex-obsidian-sync/plex-sync-obsdian-plugin
+cd /home/lucas/Projetos/obsidian-plex-sync
 npm install
 npm run typecheck
 npm run test
@@ -41,8 +41,8 @@ npm run build
 ### 4.2 Copia para o vault
 
 ```bash
-mkdir -p "/caminho/do/vault/.obsidian/plugins/plex-obsidian-sync"
-cp manifest.json main.js versions.json "/caminho/do/vault/.obsidian/plugins/plex-obsidian-sync/"
+mkdir -p "/caminho/do/vault/.obsidian/plugins/plex-sync"
+cp manifest.json main.js versions.json "/caminho/do/vault/.obsidian/plugins/plex-sync/"
 ```
 
 ### 4.3 Ativar no Obsidian

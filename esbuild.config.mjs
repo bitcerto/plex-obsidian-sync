@@ -6,6 +6,19 @@ import process from "process";
 const production = process.argv[2] === "production";
 const pluginDir = process.env.PLEX_SYNC_PLUGIN_DIR?.trim();
 const outfile = pluginDir ? path.join(pluginDir, "main.js") : "main.js";
+const rootDir = process.cwd();
+
+async function isSamePath(left, right) {
+  try {
+    const [leftRealPath, rightRealPath] = await Promise.all([
+      fs.realpath(left),
+      fs.realpath(right)
+    ]);
+    return leftRealPath === rightRealPath;
+  } catch {
+    return path.resolve(left) === path.resolve(right);
+  }
+}
 
 async function syncStaticPluginFiles() {
   if (!pluginDir) {
@@ -15,7 +28,14 @@ async function syncStaticPluginFiles() {
   await fs.mkdir(pluginDir, { recursive: true });
   await Promise.all(
     ["manifest.json", "styles.css", "versions.json"].map(async (fileName) => {
-      await fs.copyFile(fileName, path.join(pluginDir, fileName));
+      const sourcePath = path.join(rootDir, fileName);
+      const destinationPath = path.join(pluginDir, fileName);
+
+      if (await isSamePath(sourcePath, destinationPath)) {
+        return;
+      }
+
+      await fs.copyFile(sourcePath, destinationPath);
     })
   );
 }

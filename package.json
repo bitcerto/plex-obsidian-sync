@@ -1,13 +1,13 @@
 {
-  "name": "plex-obsidian-sync-plugin",
-  "version": "0.3.3",
+  "name": "plex-sync-plugin",
+  "version": "0.3.4",
   "description": "Obsidian plugin for bidirectional Plex sync",
   "main": "main.js",
   "scripts": {
     "build": "node esbuild.config.mjs production",
-    "build:vault": "PLEX_SYNC_PLUGIN_DIR=/home/lucas/Documentos/ObsidianVault/.obsidian/plugins/plex-obsidian-sync node esbuild.config.mjs production",
+    "build:vault": "PLEX_SYNC_PLUGIN_DIR=/home/lucas/Documentos/ObsidianVault/.obsidian/plugins/plex-sync node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
-    "dev:vault": "PLEX_SYNC_PLUGIN_DIR=/home/lucas/Documentos/ObsidianVault/.obsidian/plugins/plex-obsidian-sync node esbuild.config.mjs",
+    "dev:vault": "PLEX_SYNC_PLUGIN_DIR=/home/lucas/Documentos/ObsidianVault/.obsidian/plugins/plex-sync node esbuild.config.mjs",
     "typecheck": "tsc -noEmit -skipLibCheck",
     "test": "vitest run"
   },

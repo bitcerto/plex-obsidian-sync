@@ -22,7 +22,7 @@ It synchronizes:
 ## 3) Requirements
 
 1. Obsidian with Community Plugins enabled.
-2. Plugin installed in `.obsidian/plugins/plex-obsidian-sync`.
+2. Plugin installed in `.obsidian/plugins/plex-sync`.
 3. Internet access for Plex account login.
 4. For server modes, network access to the PMS.
 
@@ -37,8 +37,8 @@ It synchronizes:
 ### 4.2 Manual installation
 
 ```bash
-mkdir -p "/path/to/vault/.obsidian/plugins/plex-obsidian-sync"
-cp manifest.json main.js versions.json "/path/to/vault/.obsidian/plugins/plex-obsidian-sync/"
+mkdir -p "/path/to/vault/.obsidian/plugins/plex-sync"
+cp manifest.json main.js versions.json "/path/to/vault/.obsidian/plugins/plex-sync/"
 ```
 
 Then in Obsidian:
