@@ -22,6 +22,8 @@ interface ShowHierarchySyncParams {
   showItem: PlexMediaItem;
   client: ShowHierarchySyncClient;
   showWatchedOverride?: boolean;
+  overrideSeasonRatingKeys?: Set<string>;
+  overrideEpisodeRatingKeys?: Set<string>;
   logger: Logger;
   store: VaultStore;
   posterUrlBuilder?: (thumb: string | undefined) => string | undefined;
@@ -37,6 +39,8 @@ export async function syncShowHierarchy(
     showItem,
     client,
     showWatchedOverride,
+    overrideSeasonRatingKeys,
+    overrideEpisodeRatingKeys,
     logger,
     store,
     posterUrlBuilder
@@ -75,12 +79,20 @@ export async function syncShowHierarchy(
     const existingSeasonNote = existingSeasonRelative
       ? await store.readNote(normalizeVaultPath(noteRoot, existingSeasonRelative))
       : emptyNoteData();
-    const checkboxOverrides = forceFromShow
-      ? new Map<string, boolean>()
-      : parseSeasonCheckboxOverrides(existingSeasonNote.body);
-    const seasonAssistidoOverride = forceFromShow
-      ? undefined
-      : parseOptionalBool(existingSeasonNote.frontmatter.assistido);
+    const seasonWasExplicitlyTargeted =
+      !forceFromShow &&
+      (overrideSeasonRatingKeys === undefined || overrideSeasonRatingKeys.has(season.ratingKey));
+    const checkboxOverrides = seasonWasExplicitlyTargeted
+      ? parseSeasonCheckboxOverrides(existingSeasonNote.body)
+      : new Map<string, boolean>();
+    // Only apply season-level frontmatter override if this season was explicitly changed by the user.
+    const seasonAssistidoWasExplicitlyChanged =
+      !forceFromShow &&
+      overrideSeasonRatingKeys !== undefined &&
+      overrideSeasonRatingKeys.has(season.ratingKey);
+    const seasonAssistidoOverride = seasonAssistidoWasExplicitlyChanged
+      ? parseOptionalBool(existingSeasonNote.frontmatter.assistido)
+      : undefined;
     const episodeDesiredWatched = new Map<string, boolean>();
 
     for (const episode of season.episodes) {
@@ -91,7 +103,8 @@ export async function syncShowHierarchy(
         episodeDesiredWatched.set(episode.ratingKey, desiredByCheckbox);
       }
 
-      if (!forceFromShow) {
+      // Only read episode note when: full/manual sync (no season targeting), or this episode was explicitly changed
+      if (!forceFromShow && (overrideSeasonRatingKeys === undefined || overrideEpisodeRatingKeys?.has(episode.ratingKey) === true)) {
         const existingEpisodeRelative = generatedPathByRatingKey.get(episode.ratingKey);
         const existingEpisode = existingEpisodeRelative
           ? await store.readNote(normalizeVaultPath(noteRoot, existingEpisodeRelative))
@@ -114,43 +127,65 @@ export async function syncShowHierarchy(
       typeof season.episodeCount === "number" ? season.episodeCount : season.episodes.length;
     const seasonWatchedFromPlex =
       totalEpisodesInSeason > 0 ? watchedFromPlex >= totalEpisodesInSeason : false;
-    if (
-      typeof seasonAssistidoOverride === "boolean" &&
-      seasonAssistidoOverride !== seasonWatchedFromPlex
-    ) {
+    if (typeof seasonAssistidoOverride === "boolean") {
       for (const episode of season.episodes) {
         episodeDesiredWatched.set(episode.ratingKey, seasonAssistidoOverride);
       }
     }
 
-    const pendingEpisodeUpdates = season.episodes
-      .map((episode) => {
-        const desiredWatched = episodeDesiredWatched.get(episode.ratingKey);
-        if (typeof desiredWatched !== "boolean" || desiredWatched === episode.watched) {
-          return undefined;
-        }
-        return { episode, desiredWatched };
-      })
-      .filter(
-        (entry): entry is { episode: PlexSeasonInfo["episodes"][number]; desiredWatched: boolean } =>
-          entry !== undefined
-      );
-
-    await Promise.all(
-      pendingEpisodeUpdates.map(async ({ episode, desiredWatched }) => {
+    if (forceFromShow) {
+      for (const episode of season.episodes) {
+        episode.watched = showWatchedOverride;
+      }
+    } else if (typeof seasonAssistidoOverride === "boolean") {
+      if (seasonAssistidoOverride !== seasonWatchedFromPlex) {
         try {
-          await client.markWatched(episode.ratingKey, desiredWatched);
-          episode.watched = desiredWatched;
+          await client.markWatched(season.ratingKey, seasonAssistidoOverride);
           plexUpdated = true;
         } catch (error) {
-          logger.debug("falha ao aplicar checkbox/frontmatter da temporada no Plex", {
-            ratingKey: episode.ratingKey,
-            desiredWatched,
+          logger.debug("falha ao aplicar assistido da temporada no Plex", {
+            ratingKey: season.ratingKey,
+            desiredWatched: seasonAssistidoOverride,
             error: String(error)
           });
         }
-      })
-    );
+      }
+
+      for (const episode of season.episodes) {
+        episode.watched = seasonAssistidoOverride;
+      }
+    } else {
+      const pendingEpisodeUpdates = season.episodes
+        .map((episode) => {
+          const desiredWatched = episodeDesiredWatched.get(episode.ratingKey);
+          if (typeof desiredWatched !== "boolean" || desiredWatched === episode.watched) {
+            return undefined;
+          }
+          return { episode, desiredWatched };
+        })
+        .filter(
+          (entry): entry is { episode: PlexSeasonInfo["episodes"][number]; desiredWatched: boolean } =>
+            entry !== undefined
+        );
+
+      await Promise.all(
+        pendingEpisodeUpdates.map(async ({ episode, desiredWatched }) => {
+          try {
+            await client.markWatched(episode.ratingKey, desiredWatched);
+            episode.watched = desiredWatched;
+            plexUpdated = true;
+          } catch (error) {
+            logger.debug("falha ao aplicar checkbox/frontmatter da temporada no Plex", {
+              ratingKey: episode.ratingKey,
+              desiredWatched,
+              error: String(error)
+            });
+          }
+        })
+      );
+    }
+
+    season.watchedEpisodeCount = countWatchedEpisodes(season);
 
     const watchedEpisodes = countWatchedEpisodes(season);
     const totalEpisodes =
@@ -490,6 +525,7 @@ async function renderManagedHierarchyNote(
       managedSeed.sincronizado_por = existingSyncedBy;
     }
   }
+  managedSeed.minha_nota = typeof note.frontmatter.minha_nota === "number" ? note.frontmatter.minha_nota : "";
 
   const mergedFrontmatter = mergeFrontmatter(
     note.frontmatter,
@@ -598,10 +634,10 @@ function buildSeasonNoteFileName(seasonFolderName: string): string {
 }
 
 function countWatchedEpisodes(season: PlexSeasonInfo): number {
-  if (typeof season.watchedEpisodeCount === "number") {
-    return season.watchedEpisodeCount;
+  if (Array.isArray(season.episodes) && season.episodes.length > 0) {
+    return season.episodes.filter((entry) => entry.watched).length;
   }
-  return season.episodes.filter((entry) => entry.watched).length;
+  return typeof season.watchedEpisodeCount === "number" ? season.watchedEpisodeCount : 0;
 }
 
 function buildEpisodeFileBaseName(episode: PlexSeasonInfo["episodes"][number]): string {
@@ -656,7 +692,7 @@ function renderSeasonEpisodesSection(season: PlexSeasonInfo, seasonFolderRelativ
     if (aNum !== bNum) {
       return aNum - bNum;
     }
-    return a.title.localeCompare(b.title, "pt-BR");
+    return a.title.localeCompare(b.title);
   });
 
   const lines: string[] = ["<!-- plex-season-episodes:start -->", "## Episodios", ""];

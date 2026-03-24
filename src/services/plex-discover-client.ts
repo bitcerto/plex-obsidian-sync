@@ -15,6 +15,7 @@ interface PlexDiscoverClientOptions {
   clientIdentifier: string;
   product: string;
   timeoutSeconds: number;
+  locale?: string;
 }
 
 interface DiscoverListResponse {
@@ -65,6 +66,7 @@ export class PlexDiscoverClient {
   private clientIdentifier: string;
   private product: string;
   private timeoutSeconds: number;
+  private locale: string;
   private logger: Logger;
   private requestFn: RequestFn;
 
@@ -77,6 +79,7 @@ export class PlexDiscoverClient {
     this.clientIdentifier = options.clientIdentifier;
     this.product = options.product;
     this.timeoutSeconds = options.timeoutSeconds;
+    this.locale = options.locale?.trim() || "";
     this.logger = logger;
     this.requestFn = requestFn;
   }
@@ -307,7 +310,7 @@ export class PlexDiscoverClient {
         if (aNumber !== bNumber) {
           return aNumber - bNumber;
         }
-        return a.title.localeCompare(b.title, "pt-BR");
+        return a.title.localeCompare(b.title, this.locale || undefined);
       });
   }
 
@@ -810,8 +813,7 @@ export class PlexDiscoverClient {
       "X-Plex-Client-Identifier": this.clientIdentifier,
       "X-Plex-Product": this.product,
       "X-Plex-Device-Name": this.product,
-      "X-Plex-Language": "pt-BR",
-      "Accept-Language": "pt-BR"
+      ...(this.locale ? { "X-Plex-Language": this.locale, "Accept-Language": this.locale } : {})
     };
   }
 }

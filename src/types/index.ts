@@ -220,6 +220,8 @@ export interface SyncOptions {
   preferredObsidianWatchedByKey?: Record<string, boolean>;
   targetRatingKeys?: string[];
   deletedRatingKeys?: string[];
+  overrideSeasonRatingKeys?: Set<string>;
+  overrideEpisodeRatingKeys?: Set<string>;
 }
 
 export interface SyncExecutionResult {

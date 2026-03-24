@@ -135,7 +135,7 @@ function renderSeriesSection(item: PlexMediaItem): string {
     if (aIndex !== bIndex) {
       return aIndex - bIndex;
     }
-    return a.title.localeCompare(b.title, "pt-BR");
+    return a.title.localeCompare(b.title);
   });
 
   const lines: string[] = [SERIES_SECTION_START, "## Temporadas e episodios", ""];
@@ -160,7 +160,7 @@ function renderSeriesSection(item: PlexMediaItem): string {
       if (aNum !== bNum) {
         return aNum - bNum;
       }
-      return a.title.localeCompare(b.title, "pt-BR");
+      return a.title.localeCompare(b.title);
     });
 
     for (const episode of episodes) {

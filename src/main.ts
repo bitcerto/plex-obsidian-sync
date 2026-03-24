@@ -34,6 +34,8 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   private pendingPreferredObsidianKeys = new Set<string>();
   private pendingPreferredObsidianWatchedByKey = new Map<string, boolean>();
   private pendingTargetOnlyRatingKeys = new Set<string>();
+  private pendingOverrideSeasonRatingKeys = new Set<string>();
+  private pendingOverrideEpisodeRatingKeys = new Set<string>();
   private pendingDeletedRatingKeys = new Set<string>();
   private loginInProgress = false;
   private pendingRetrySync: (() => void) | null = null;
@@ -407,7 +409,9 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     preferredObsidianKeys?: string[],
     preferredObsidianWatchedByKey?: Record<string, boolean>,
     targetRatingKeys?: string[],
-    deletedRatingKeys?: string[]
+    deletedRatingKeys?: string[],
+    overrideSeasonRatingKeys?: Set<string>,
+    overrideEpisodeRatingKeys?: Set<string>
   ): Promise<{
     report: SyncReport;
     skipped: boolean;
@@ -425,7 +429,7 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     const isEventSync =
       reason === "note-delete" || reason === "note-modify" || reason === "note-create";
 
-    if (this.syncingNow && isEventSync) {
+    if (this.syncingNow && (isEventSync || reason === "manual")) {
       this.pendingRetrySync = () => {
         void this.executeSync(
           reason,
@@ -433,7 +437,9 @@ export default class PlexObsidianSyncPlugin extends Plugin {
           preferredObsidianKeys,
           preferredObsidianWatchedByKey,
           targetRatingKeys,
-          deletedRatingKeys
+          deletedRatingKeys,
+          overrideSeasonRatingKeys,
+          overrideEpisodeRatingKeys
         );
       };
       return null;
@@ -447,7 +453,9 @@ export default class PlexObsidianSyncPlugin extends Plugin {
         preferredObsidianKeys,
         preferredObsidianWatchedByKey,
         targetRatingKeys,
-        deletedRatingKeys
+        deletedRatingKeys,
+        overrideSeasonRatingKeys,
+        overrideEpisodeRatingKeys
       });
 
       this.handleReport(result.report, result.skipped);
@@ -604,7 +612,8 @@ export default class PlexObsidianSyncPlugin extends Plugin {
         accountToken: this.settings.plexAccountToken,
         clientIdentifier: this.settings.plexClientIdentifier,
         product: PRODUCT_NAME,
-        timeoutSeconds: ensureMinNumber(this.settings.requestTimeoutSeconds, 5)
+        timeoutSeconds: ensureMinNumber(this.settings.requestTimeoutSeconds, 5),
+        locale: this.settings.obsidianLocale || this.settings.plexAccountLocale
       },
       this.logger
     );
@@ -791,16 +800,23 @@ export default class PlexObsidianSyncPlugin extends Plugin {
         Array.from(this.pendingPreferredObsidianWatchedByKey.entries())
       );
       const targetOnlyKeys = Array.from(this.pendingTargetOnlyRatingKeys);
+      const overrideSeasonKeys = new Set(this.pendingOverrideSeasonRatingKeys);
+      const overrideEpisodeKeys = new Set(this.pendingOverrideEpisodeRatingKeys);
       this.pendingPreferredObsidianKeys.clear();
       this.pendingPreferredObsidianWatchedByKey.clear();
       this.pendingTargetOnlyRatingKeys.clear();
+      this.pendingOverrideSeasonRatingKeys.clear();
+      this.pendingOverrideEpisodeRatingKeys.clear();
       const allTargetKeys = [...preferredKeys, ...targetOnlyKeys];
       void this.executeSync(
         "note-modify",
         false,
         preferredKeys,
         preferredWatchedByKey,
-        allTargetKeys
+        allTargetKeys,
+        undefined,
+        overrideSeasonKeys,
+        overrideEpisodeKeys
       );
     }, MODIFY_SYNC_DEBOUNCE_MS);
   }
@@ -822,6 +838,26 @@ export default class PlexObsidianSyncPlugin extends Plugin {
         // Season/episode note: target the parent show for syncShowHierarchy
         // but do NOT mark it as preferred so show-level watched is not forced
         this.pendingTargetOnlyRatingKeys.add(serieRatingKey);
+        const noteType = extractTypeFromSignature(nextSignature);
+        const watchedChanged =
+          extractWatchedFromSignature(previousSignature) !== extractWatchedFromSignature(nextSignature);
+        const seasonCheckboxChanged =
+          noteType === "season" &&
+          extractSeasonCheckboxSnapshotFromSignature(previousSignature) !==
+            extractSeasonCheckboxSnapshotFromSignature(nextSignature);
+        if (ratingKey && watchedChanged) {
+          // For season notes: mark season for assistido override propagation
+          if (noteType === "season") {
+            this.pendingOverrideSeasonRatingKeys.add(ratingKey);
+          }
+          // For episode notes: mark episode so its assistido is read during sync
+          if (noteType === "episode") {
+            this.pendingOverrideEpisodeRatingKeys.add(ratingKey);
+          }
+        }
+        if (ratingKey && noteType === "season" && seasonCheckboxChanged) {
+          this.pendingOverrideSeasonRatingKeys.add(ratingKey);
+        }
       } else if (ratingKey) {
         this.pendingPreferredObsidianKeys.add(ratingKey);
         const watched = extractWatchedFromSignature(nextSignature);
@@ -1008,6 +1044,12 @@ function buildWatchedSignature(markdown: string): string | undefined {
   return `${type}|${ratingKey}|${watchedValue}|${checkboxState}|${serieRatingKey}`;
 }
 
+function extractTypeFromSignature(signature: string): string | undefined {
+  const parts = signature.split("|");
+  const type = parts[0]?.trim();
+  return type && type.length > 0 ? type : undefined;
+}
+
 function extractRatingKeyFromSignature(signature: string): string | undefined {
   const parts = signature.split("|");
   if (parts.length < 2) {
@@ -1037,6 +1079,14 @@ function extractWatchedFromSignature(signature: string): boolean | undefined {
     return false;
   }
   return undefined;
+}
+
+function extractSeasonCheckboxSnapshotFromSignature(signature: string): string {
+  const parts = signature.split("|");
+  if (parts.length < 4) {
+    return "";
+  }
+  return parts[3].trim();
 }
 
 function normalizeFrontmatterKeys(frontmatter: Record<string, unknown>): Record<string, unknown> {

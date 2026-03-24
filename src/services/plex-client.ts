@@ -103,7 +103,7 @@ export class PmsClient {
         if (aNumber !== bNumber) {
           return aNumber - bNumber;
         }
-        return a.title.localeCompare(b.title, "pt-BR");
+        return a.title.localeCompare(b.title);
       });
   }
 

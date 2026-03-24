@@ -175,7 +175,8 @@ export class SyncEngine {
             accountToken: settings.plexAccountToken,
             clientIdentifier: settings.plexClientIdentifier,
             product: "Plex Sync",
-            timeoutSeconds
+            timeoutSeconds,
+            locale: settings.obsidianLocale || settings.plexAccountLocale
           },
           this.logger
         );
@@ -272,7 +273,8 @@ export class SyncEngine {
                     accountToken: settings.plexAccountToken,
                     clientIdentifier: settings.plexClientIdentifier,
                     product: "Plex Sync",
-                    timeoutSeconds
+                    timeoutSeconds,
+                    locale: settings.obsidianLocale || settings.plexAccountLocale
                   },
                   this.logger
                 )
@@ -316,6 +318,7 @@ export class SyncEngine {
       for (const item of items) {
         const prev = state.items[item.ratingKey];
         const currentNotePath = this.notePathByRatingKey.get(item.ratingKey);
+        const forceTargetedSync = targetRatingKeys.has(item.ratingKey);
         const preferObsidianWhenStateMissing = preferredObsidianKeys.has(item.ratingKey);
         const preferredObsidianWatched = preferredObsidianWatchedByKey.get(item.ratingKey);
 
@@ -323,6 +326,7 @@ export class SyncEngine {
           item,
           previousState: prev,
           currentNotePath,
+          forceTargetedSync,
           preferObsidianWhenStateMissing,
           preferredObsidianWatched,
           forceFullRebuild,
@@ -367,7 +371,9 @@ export class SyncEngine {
             client,
             preferredObsidianKeys.has(item.ratingKey),
             preferredObsidianWatchedByKey.get(item.ratingKey),
-            posterUrlBuilder
+            posterUrlBuilder,
+            options.overrideSeasonRatingKeys,
+            options.overrideEpisodeRatingKeys
           );
           if (result.noteCreated) {
             report.createdNotes += 1;
@@ -476,7 +482,9 @@ export class SyncEngine {
     client: SyncClient,
     preferObsidianWhenStateMissing = false,
     preferredObsidianWatched?: boolean,
-    posterUrlBuilder?: (thumb: string | undefined) => string | undefined
+    posterUrlBuilder?: (thumb: string | undefined) => string | undefined,
+    overrideSeasonRatingKeys?: Set<string>,
+    overrideEpisodeRatingKeys?: Set<string>
   ): Promise<SyncItemResult> {
     const noteRoot = normalizeVaultPath(settings.notesFolder);
     const previousRelPath = previousState?.notePath;
@@ -647,6 +655,30 @@ export class SyncEngine {
       }
     }
 
+    if (item.type === "show") {
+      const showWatchedOverride =
+        obsidianChanged && syncSource !== "plex" ? obsidianWatched : undefined;
+      const hierarchy = await syncShowHierarchy({
+        app: this.app,
+        noteRoot,
+        showNoteRelativePath: relativePath,
+        showItem: item,
+        client,
+        showWatchedOverride,
+        overrideSeasonRatingKeys,
+        overrideEpisodeRatingKeys,
+        logger: this.logger,
+        store: this.store,
+        posterUrlBuilder
+      });
+      if (hierarchy.noteChanged) {
+        noteUpdated = true;
+      }
+      if (hierarchy.plexUpdated) {
+        plexUpdated = true;
+      }
+    }
+
     const finalWatched = plexCurrentWatched;
     item.inWatchlist = supportsWatchlist ? plexCurrentWatchlisted : undefined;
     const managedMeta = buildManagedMetadata({
@@ -664,28 +696,6 @@ export class SyncEngine {
     if (!note.exists || rendered !== note.content) {
       await this.store.writeNote(absolutePath, rendered);
       noteUpdated = true;
-    }
-
-    if (item.type === "show") {
-      const showWatchedOverride =
-        obsidianChanged && syncSource !== "plex" ? obsidianWatched : undefined;
-      const hierarchy = await syncShowHierarchy({
-        app: this.app,
-        noteRoot,
-        showNoteRelativePath: relativePath,
-        showItem: item,
-        client,
-        showWatchedOverride,
-        logger: this.logger,
-        store: this.store,
-        posterUrlBuilder
-      });
-      if (hierarchy.noteChanged) {
-        noteUpdated = true;
-      }
-      if (hierarchy.plexUpdated) {
-        plexUpdated = true;
-      }
     }
 
     const watchedForState = parseBool(mergedFrontmatter.assistido, plexCurrentWatched);

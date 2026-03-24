@@ -100,6 +100,7 @@ export function shouldProcessIncrementally(params: {
   item: PlexMediaItem;
   previousState: SyncItemState | undefined;
   currentNotePath: string | undefined;
+  forceTargetedSync: boolean;
   preferObsidianWhenStateMissing: boolean;
   preferredObsidianWatched: boolean | undefined;
   forceFullRebuild: boolean;
@@ -110,6 +111,7 @@ export function shouldProcessIncrementally(params: {
     item,
     previousState,
     currentNotePath,
+    forceTargetedSync,
     preferObsidianWhenStateMissing,
     preferredObsidianWatched,
     forceFullRebuild,
@@ -118,6 +120,10 @@ export function shouldProcessIncrementally(params: {
   } = params;
 
   if (forceFullRebuild) {
+    return true;
+  }
+
+  if (forceTargetedSync) {
     return true;
   }
 
