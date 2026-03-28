@@ -23,6 +23,7 @@ const LIBRARY_PAGE_SIZE = 200;
 
 export class PmsClient {
   readonly supportsSeasonWatchedWrites = true;
+  readonly supportsShowWatchedWrites = true;
   private baseUrl: string;
   private token: string;
   private timeoutSeconds: number;

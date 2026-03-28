@@ -64,6 +64,7 @@ const WATCHED_HISTORY_ENDPOINTS = [
 
 export class PlexDiscoverClient {
   readonly supportsSeasonWatchedWrites = false;
+  readonly supportsShowWatchedWrites = false;
   private accountToken: string;
   private clientIdentifier: string;
   private product: string;

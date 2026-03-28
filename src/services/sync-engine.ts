@@ -69,6 +69,7 @@ interface SyncItemResult {
 interface SyncClient {
   markWatched(ratingKey: string, watched: boolean): Promise<void>;
   supportsSeasonWatchedWrites?: boolean;
+  supportsShowWatchedWrites?: boolean;
   setWatchlisted?: (ratingKey: string, watchlisted: boolean) => Promise<void>;
   getShowSeasons?: (showRatingKey: string) => Promise<PlexSeasonInfo[]>;
 }
@@ -546,12 +547,21 @@ export class SyncEngine {
     let syncSource = "none";
     const supportsWatchlist = typeof client.setWatchlisted === "function";
     let forcedObsidianApplied = false;
+    let deferredShowWatchedOverride: boolean | undefined;
+    const deferShowWatchedWrite =
+      item.type === "show" &&
+      typeof client.getShowSeasons === "function" &&
+      client.supportsShowWatchedWrites === false;
 
     if (preferObsidianWhenStateMissing) {
       if (obsidianWatched !== plexCurrentWatched) {
-        await client.markWatched(item.ratingKey, obsidianWatched);
-        plexCurrentWatched = obsidianWatched;
-        plexUpdated = true;
+        if (!deferShowWatchedWrite) {
+          await client.markWatched(item.ratingKey, obsidianWatched);
+          plexCurrentWatched = obsidianWatched;
+          plexUpdated = true;
+        } else {
+          deferredShowWatchedOverride = obsidianWatched;
+        }
         forcedObsidianApplied = true;
       }
     } else if (!hasPrevious) {
@@ -561,9 +571,13 @@ export class SyncEngine {
       syncSource = "plex";
     } else if (obsidianChanged && !plexChanged) {
       if (obsidianWatched !== plexCurrentWatched) {
-        await client.markWatched(item.ratingKey, obsidianWatched);
-        plexCurrentWatched = obsidianWatched;
-        plexUpdated = true;
+        if (!deferShowWatchedWrite) {
+          await client.markWatched(item.ratingKey, obsidianWatched);
+          plexCurrentWatched = obsidianWatched;
+          plexUpdated = true;
+        } else {
+          deferredShowWatchedOverride = obsidianWatched;
+        }
       }
       syncSource = "obsidian";
     } else if (obsidianChanged && plexChanged && obsidianWatched !== plexCurrentWatched) {
@@ -576,9 +590,13 @@ export class SyncEngine {
       );
 
       if (winner === "obsidian") {
-        await client.markWatched(item.ratingKey, obsidianWatched);
-        plexCurrentWatched = obsidianWatched;
-        plexUpdated = true;
+        if (!deferShowWatchedWrite) {
+          await client.markWatched(item.ratingKey, obsidianWatched);
+          plexCurrentWatched = obsidianWatched;
+          plexUpdated = true;
+        } else {
+          deferredShowWatchedOverride = obsidianWatched;
+        }
         syncSource = "obsidian";
       } else {
         obsidianWatched = plexCurrentWatched;
@@ -664,7 +682,11 @@ export class SyncEngine {
 
     if (item.type === "show") {
       const showWatchedOverride =
-        obsidianChanged && syncSource !== "plex" ? obsidianWatched : undefined;
+        typeof deferredShowWatchedOverride === "boolean"
+          ? deferredShowWatchedOverride
+          : obsidianChanged && syncSource !== "plex"
+            ? obsidianWatched
+            : undefined;
       const hierarchy = await syncShowHierarchy({
         app: this.app,
         noteRoot,
@@ -686,6 +708,9 @@ export class SyncEngine {
       }
       if (hierarchy.plexUpdated) {
         plexUpdated = true;
+      }
+      if (deferShowWatchedWrite && typeof showWatchedOverride === "boolean") {
+        plexCurrentWatched = showWatchedOverride;
       }
     }
 

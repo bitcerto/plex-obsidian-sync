@@ -292,7 +292,7 @@ describe("show-hierarchy-sync", () => {
     expect(markWatched).toHaveBeenNthCalledWith(2, "ep-2", true);
   });
 
-  it("nao dispara updates por episodio quando o show ja foi marcado no nivel da serie", async () => {
+  it("nao dispara updates por episodio quando o client suporta escrita direta da serie", async () => {
     const noteRoot = "Media-Plex";
     const showFolder = "Series/Dark";
     const store = new FakeVaultStore({});
@@ -304,13 +304,44 @@ describe("show-hierarchy-sync", () => {
       noteRoot,
       showNoteRelativePath: `${showFolder}/Dark.md`,
       showItem: buildShowItem(),
-      client: { markWatched },
+      client: {
+        markWatched,
+        supportsShowWatchedWrites: true
+      },
       showWatchedOverride: true,
       logger: new Logger(false),
       store: store as never
     });
 
     expect(markWatched).not.toHaveBeenCalled();
+  });
+
+  it("faz fan-out episodio a episodio quando a serie e marcada e o client nao suporta escrita direta da serie", async () => {
+    const noteRoot = "Media-Plex";
+    const showFolder = "Series/Dark";
+    const store = new FakeVaultStore({});
+    const app = buildApp(store);
+    const markWatched = vi.fn(async () => {});
+
+    await syncShowHierarchy({
+      app: app as never,
+      noteRoot,
+      showNoteRelativePath: `${showFolder}/Dark.md`,
+      showItem: buildShowItem(),
+      client: {
+        markWatched,
+        supportsShowWatchedWrites: false
+      },
+      showWatchedOverride: true,
+      logger: new Logger(false),
+      store: store as never
+    });
+
+    expect(markWatched).toHaveBeenCalledTimes(4);
+    expect(markWatched).toHaveBeenNthCalledWith(1, "ep-1", true);
+    expect(markWatched).toHaveBeenNthCalledWith(2, "ep-2", true);
+    expect(markWatched).toHaveBeenNthCalledWith(3, "ep-3", true);
+    expect(markWatched).toHaveBeenNthCalledWith(4, "ep-4", true);
   });
 
   it("aplica override de episodio apenas ao episodio explicitamente alvo", async () => {
