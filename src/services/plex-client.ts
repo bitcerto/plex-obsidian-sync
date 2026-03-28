@@ -1,6 +1,6 @@
 import { requestUrl } from "obsidian";
 import { XMLParser } from "fast-xml-parser";
-import { parseItemsXml, parseSectionsXml } from "../core/plex-xml-parser";
+import { parseItemsPageXml, parseSectionsXml } from "../core/plex-xml-parser";
 import { toNumber } from "../core/utils";
 import type { PlexEpisodeInfo, PlexMediaItem, PlexSeasonInfo, PlexSection } from "../types";
 import { Logger } from "./logger";
@@ -19,6 +19,7 @@ interface PlexHttpResponse {
 }
 
 const HIERARCHY_PAGE_SIZE = 200;
+const LIBRARY_PAGE_SIZE = 200;
 
 export class PmsClient {
   readonly supportsSeasonWatchedWrites = true;
@@ -42,8 +43,41 @@ export class PmsClient {
   }
 
   async listLibraryItems(sectionKey: string, libraryTitle: string): Promise<PlexMediaItem[]> {
-    const xml = await this.requestXml("GET", `/library/sections/${sectionKey}/all`);
-    return parseItemsXml(xml, libraryTitle);
+    const dedup = new Map<string, PlexMediaItem>();
+    let start = 0;
+    let knownTotal: number | undefined;
+
+    while (true) {
+      const xml = await this.requestXml("GET", `/library/sections/${sectionKey}/all`, {
+        "X-Plex-Container-Start": String(start),
+        "X-Plex-Container-Size": String(LIBRARY_PAGE_SIZE)
+      });
+      const page = parseItemsPageXml(xml, libraryTitle);
+
+      for (const item of page.items) {
+        dedup.set(item.ratingKey, item);
+      }
+
+      if (knownTotal === undefined && typeof page.totalSize === "number") {
+        knownTotal = page.totalSize;
+      }
+
+      start += page.nodeCount;
+
+      if (page.nodeCount === 0) {
+        break;
+      }
+
+      if (knownTotal !== undefined && start >= knownTotal) {
+        break;
+      }
+
+      if (knownTotal === undefined && page.nodeCount < LIBRARY_PAGE_SIZE) {
+        break;
+      }
+    }
+
+    return Array.from(dedup.values());
   }
 
   async markWatched(ratingKey: string, watched: boolean): Promise<void> {

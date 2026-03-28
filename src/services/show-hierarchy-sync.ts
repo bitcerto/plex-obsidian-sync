@@ -25,6 +25,9 @@ interface ShowHierarchySyncParams {
   showWatchedOverride?: boolean;
   overrideSeasonRatingKeys?: Set<string>;
   overrideEpisodeRatingKeys?: Set<string>;
+  overrideSeasonWatchedByKey?: Map<string, boolean>;
+  overrideEpisodeWatchedByKey?: Map<string, boolean>;
+  overrideSeasonCheckboxSnapshotsByKey?: Map<string, string>;
   logger: Logger;
   store: VaultStore;
   posterUrlBuilder?: (thumb: string | undefined) => string | undefined;
@@ -42,6 +45,9 @@ export async function syncShowHierarchy(
     showWatchedOverride,
     overrideSeasonRatingKeys,
     overrideEpisodeRatingKeys,
+    overrideSeasonWatchedByKey,
+    overrideEpisodeWatchedByKey,
+    overrideSeasonCheckboxSnapshotsByKey,
     logger,
     store,
     posterUrlBuilder
@@ -66,6 +72,15 @@ export async function syncShowHierarchy(
   let changed = false;
   let plexUpdated = false;
   const expectedGeneratedFiles = new Set<string>();
+  const explicitSeasonTargetCount = overrideSeasonRatingKeys?.size ?? 0;
+  const explicitEpisodeTargetCount = overrideEpisodeRatingKeys?.size ?? 0;
+  const hasExplicitSeasonTargets = explicitSeasonTargetCount > 0;
+  const hasExplicitEpisodeTargets = explicitEpisodeTargetCount > 0;
+  const strictWriteRequested =
+    typeof showWatchedOverride === "boolean" ||
+    hasExplicitSeasonTargets ||
+    hasExplicitEpisodeTargets;
+  const writeFailures: string[] = [];
   const generatedPathByRatingKey = await scanGeneratedPathsByRatingKey(
     app,
     store,
@@ -76,28 +91,59 @@ export async function syncShowHierarchy(
 
   for (const season of seasons) {
     const forceFromShow = typeof showWatchedOverride === "boolean";
+    const seasonContainsTargetEpisode =
+      hasExplicitEpisodeTargets &&
+      season.episodes.some((episode) => overrideEpisodeRatingKeys?.has(episode.ratingKey) === true);
+    const shouldProcessSeason =
+      forceFromShow ||
+      (!hasExplicitSeasonTargets && !hasExplicitEpisodeTargets) ||
+      (hasExplicitSeasonTargets && overrideSeasonRatingKeys?.has(season.ratingKey) === true) ||
+      seasonContainsTargetEpisode;
+    if (!shouldProcessSeason) {
+      continue;
+    }
     const existingSeasonRelative = generatedPathByRatingKey.get(season.ratingKey);
     const existingSeasonNote = existingSeasonRelative
       ? await store.readNote(normalizeVaultPath(noteRoot, existingSeasonRelative))
       : emptyNoteData();
+    const explicitSeasonCheckboxSnapshot =
+      overrideSeasonCheckboxSnapshotsByKey?.get(season.ratingKey);
+    const explicitSeasonWatchedOverride = overrideSeasonWatchedByKey?.get(season.ratingKey);
     const seasonWasExplicitlyTargeted =
       !forceFromShow &&
       (overrideSeasonRatingKeys === undefined || overrideSeasonRatingKeys.has(season.ratingKey));
-    const checkboxOverrides = seasonWasExplicitlyTargeted
-      ? parseSeasonCheckboxOverrides(existingSeasonNote.body)
-      : new Map<string, boolean>();
+    const checkboxOverrides =
+      explicitSeasonCheckboxSnapshot !== undefined
+        ? parseSeasonCheckboxSnapshot(explicitSeasonCheckboxSnapshot)
+        : seasonWasExplicitlyTargeted && typeof explicitSeasonWatchedOverride !== "boolean"
+          ? parseSeasonCheckboxOverrides(existingSeasonNote.body)
+          : new Map<string, boolean>();
     // Only apply season-level frontmatter override if this season was explicitly changed by the user.
     const seasonAssistidoWasExplicitlyChanged =
       !forceFromShow &&
-      overrideSeasonRatingKeys !== undefined &&
-      overrideSeasonRatingKeys.has(season.ratingKey);
-    const seasonAssistidoOverride = seasonAssistidoWasExplicitlyChanged
-      ? parseOptionalBool(existingSeasonNote.frontmatter.assistido)
-      : undefined;
+      (
+        typeof explicitSeasonWatchedOverride === "boolean" ||
+        (
+          explicitSeasonCheckboxSnapshot === undefined &&
+          overrideSeasonRatingKeys !== undefined &&
+          overrideSeasonRatingKeys.has(season.ratingKey)
+        )
+      );
+    const seasonAssistidoOverride =
+      typeof explicitSeasonWatchedOverride === "boolean"
+        ? explicitSeasonWatchedOverride
+        : seasonAssistidoWasExplicitlyChanged
+          ? parseOptionalBool(existingSeasonNote.frontmatter.assistido)
+          : undefined;
     const episodeDesiredWatched = new Map<string, boolean>();
 
     for (const episode of season.episodes) {
       episodeDesiredWatched.set(episode.ratingKey, episode.watched);
+
+      const desiredByExplicitEpisodeOverride = overrideEpisodeWatchedByKey?.get(episode.ratingKey);
+      if (typeof desiredByExplicitEpisodeOverride === "boolean") {
+        episodeDesiredWatched.set(episode.ratingKey, desiredByExplicitEpisodeOverride);
+      }
 
       const desiredByCheckbox = checkboxOverrides.get(episode.ratingKey);
       if (typeof desiredByCheckbox === "boolean") {
@@ -105,7 +151,11 @@ export async function syncShowHierarchy(
       }
 
       // Only read episode note when: full/manual sync (no season targeting), or this episode was explicitly changed
-      if (!forceFromShow && (overrideSeasonRatingKeys === undefined || overrideEpisodeRatingKeys?.has(episode.ratingKey) === true)) {
+      if (
+        !forceFromShow &&
+        typeof desiredByExplicitEpisodeOverride !== "boolean" &&
+        (overrideSeasonRatingKeys === undefined || overrideEpisodeRatingKeys?.has(episode.ratingKey) === true)
+      ) {
         const existingEpisodeRelative = generatedPathByRatingKey.get(episode.ratingKey);
         const existingEpisode = existingEpisodeRelative
           ? await store.readNote(normalizeVaultPath(noteRoot, existingEpisodeRelative))
@@ -145,6 +195,9 @@ export async function syncShowHierarchy(
           await client.markWatched(season.ratingKey, seasonAssistidoOverride);
           plexUpdated = true;
         } catch (error) {
+          writeFailures.push(
+            `temporada ${season.ratingKey} -> ${String(error)}`
+          );
           logger.debug("falha ao aplicar assistido da temporada no Plex", {
             ratingKey: season.ratingKey,
             desiredWatched: seasonAssistidoOverride,
@@ -172,6 +225,9 @@ export async function syncShowHierarchy(
               episode.watched = desiredWatched;
               plexUpdated = true;
             } catch (error) {
+              writeFailures.push(
+                `episodio ${episode.ratingKey} -> ${String(error)}`
+              );
               logger.debug("falha ao aplicar fallback episodio-a-episodio da temporada no Plex", {
                 ratingKey: episode.ratingKey,
                 desiredWatched,
@@ -206,6 +262,9 @@ export async function syncShowHierarchy(
             episode.watched = desiredWatched;
             plexUpdated = true;
           } catch (error) {
+            writeFailures.push(
+              `episodio ${episode.ratingKey} -> ${String(error)}`
+            );
             logger.debug("falha ao aplicar checkbox/frontmatter da temporada no Plex", {
               ratingKey: episode.ratingKey,
               desiredWatched,
@@ -214,6 +273,10 @@ export async function syncShowHierarchy(
           }
         })
       );
+    }
+
+    if (strictWriteRequested && !plexUpdated && writeFailures.length > 0) {
+      throw new Error(writeFailures.join(" | "));
     }
 
     season.watchedEpisodeCount = countWatchedEpisodes(season);
@@ -286,6 +349,14 @@ export async function syncShowHierarchy(
         }
       }
       generatedPathByRatingKey.set(episode.ratingKey, episodeRelative);
+      const shouldRenderEpisodeNote =
+        forceFromShow ||
+        hasExplicitSeasonTargets ||
+        !hasExplicitEpisodeTargets ||
+        overrideEpisodeRatingKeys?.has(episode.ratingKey) === true;
+      if (!shouldRenderEpisodeNote) {
+        continue;
+      }
       const refreshedEpisodeNote = await store.readNote(
         normalizeVaultPath(noteRoot, episodeRelative)
       );
@@ -360,15 +431,20 @@ export async function syncShowHierarchy(
     }
   }
 
-  const cleaned = await cleanupGeneratedShowNotes(
-    app,
-    store,
-    noteRoot,
-    showFolderRelative,
-    showItem.ratingKey,
-    expectedGeneratedFiles
-  );
-  const cleanedFolders = await cleanupEmptyFoldersUnder(app, store, noteRoot, showFolderRelative);
+  const shouldCleanupGeneratedNotes = !strictWriteRequested;
+  const cleaned = shouldCleanupGeneratedNotes
+    ? await cleanupGeneratedShowNotes(
+        app,
+        store,
+        noteRoot,
+        showFolderRelative,
+        showItem.ratingKey,
+        expectedGeneratedFiles
+      )
+    : false;
+  const cleanedFolders = shouldCleanupGeneratedNotes
+    ? await cleanupEmptyFoldersUnder(app, store, noteRoot, showFolderRelative)
+    : false;
   return {
     noteChanged: changed || cleaned || cleanedFolders,
     plexUpdated
@@ -825,6 +901,29 @@ function parseSeasonCheckboxOverrides(body: string): Map<string, boolean> {
     const checked = match[1].toLowerCase() === "x";
     const ratingKey = match[2];
     overrides.set(ratingKey, checked);
+  }
+
+  return overrides;
+}
+
+function parseSeasonCheckboxSnapshot(snapshot: string): Map<string, boolean> {
+  const overrides = new Map<string, boolean>();
+  const normalized = snapshot.trim();
+  if (normalized.length === 0) {
+    return overrides;
+  }
+
+  for (const pair of normalized.split(",")) {
+    const separatorIndex = pair.lastIndexOf(":");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+    const ratingKey = pair.slice(0, separatorIndex).trim();
+    const rawValue = pair.slice(separatorIndex + 1).trim();
+    if (!ratingKey || (rawValue !== "0" && rawValue !== "1")) {
+      continue;
+    }
+    overrides.set(ratingKey, rawValue === "1");
   }
 
   return overrides;

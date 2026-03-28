@@ -222,6 +222,9 @@ export interface SyncOptions {
   deletedRatingKeys?: string[];
   overrideSeasonRatingKeys?: Set<string>;
   overrideEpisodeRatingKeys?: Set<string>;
+  overrideSeasonWatchedByKey?: Map<string, boolean>;
+  overrideEpisodeWatchedByKey?: Map<string, boolean>;
+  overrideSeasonCheckboxSnapshotsByKey?: Map<string, string>;
 }
 
 export interface SyncExecutionResult {

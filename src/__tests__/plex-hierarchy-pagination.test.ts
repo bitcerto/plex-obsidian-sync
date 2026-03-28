@@ -8,6 +8,57 @@ beforeAll(() => {
 });
 
 describe("plex hierarchy pagination", () => {
+  it("carrega todos os itens paginados na biblioteca PMS", async () => {
+    const requestFn = vi.fn(async ({ url }: { url: string }) => {
+      const parsed = new URL(url);
+      const start = Number(parsed.searchParams.get("X-Plex-Container-Start") || "0");
+
+      if (parsed.pathname.endsWith("/library/sections/1/all")) {
+        if (start === 0) {
+          const firstPageItems = Array.from({ length: 200 }, (_, idx) => {
+            const itemNumber = idx + 1;
+            return `<Directory ratingKey="show-${itemNumber}" type="show" title="Serie ${itemNumber}" leafCount="10" viewedLeafCount="0" />`;
+          }).join("");
+
+          return {
+            status: 200,
+            text: `<MediaContainer size="200" totalSize="201">${firstPageItems}</MediaContainer>`
+          };
+        }
+
+        if (start === 200) {
+          return {
+            status: 200,
+            text: `
+              <MediaContainer size="1" totalSize="201">
+                <Directory ratingKey="show-201" type="show" title="From" leafCount="10" viewedLeafCount="0" />
+              </MediaContainer>
+            `
+          };
+        }
+      }
+
+      throw new Error(`unexpected request ${url}`);
+    });
+
+    const client = new PmsClient(
+      {
+        baseUrl: "http://127.0.0.1:32400",
+        token: "token",
+        timeoutSeconds: 5
+      },
+      new Logger(false),
+      requestFn as never
+    );
+
+    const items = await client.listLibraryItems("1", "Series");
+    const lastItem = items[items.length - 1];
+
+    expect(items).toHaveLength(201);
+    expect(lastItem?.title).toBe("From");
+    expect(requestFn).toHaveBeenCalledTimes(2);
+  });
+
   it("carrega todos os episódios paginados no PMS", async () => {
     const requestFn = vi.fn(async ({ url }: { url: string }) => {
       const parsed = new URL(url);

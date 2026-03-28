@@ -53,6 +53,7 @@ interface PlexHttpResponse {
 
 const DISCOVER_BASE = "https://discover.provider.plex.tv";
 const METADATA_BASE = "https://metadata.provider.plex.tv";
+const VOD_BASE = "https://vod.provider.plex.tv";
 const ACCOUNT_PAGE_SIZE = 100;
 const HIERARCHY_PAGE_SIZE = 200;
 const WATCHED_HISTORY_ENDPOINTS = [
@@ -221,30 +222,52 @@ export class PlexDiscoverClient {
 
   async markWatched(ratingKey: string, watched: boolean): Promise<void> {
     const action = watched ? "scrobble" : "unscrobble";
-    this.logger.debug("aplicando assistido via Plex Discover metadata action", {
-      ratingKey,
-      watched,
-      endpoint: `${METADATA_BASE}/actions/${action}`,
-      params: buildWatchedActionParams(ratingKey)
-    });
-    await this.requestAction(
-      `${METADATA_BASE}/actions/${action}`,
-      buildWatchedActionParams(ratingKey)
-    );
+    let discoverConfirmed: boolean | undefined = false;
+    try {
+      discoverConfirmed = await this.applyWatchedAction(
+        `${DISCOVER_BASE}/actions/${action}`,
+        buildDiscoverWatchedActionParams(ratingKey),
+        ratingKey,
+        watched,
+        "discover"
+      );
+    } catch (error) {
+      this.logger.debug("falha ao aplicar assistido via Discover activity action", {
+        ratingKey,
+        watched,
+        error: String(error)
+      });
+    }
+    let stateChanged = discoverConfirmed === true || discoverConfirmed === undefined;
+    if (!stateChanged) {
+      const metadataConfirmed = await this.applyWatchedAction(
+        `${METADATA_BASE}/actions/${action}`,
+        buildMetadataWatchedActionParams(ratingKey),
+        ratingKey,
+        watched,
+        "metadata"
+      );
+      stateChanged = metadataConfirmed === true || metadataConfirmed === undefined;
+    }
 
-    const confirmed = await this.confirmWatchedState(ratingKey, watched);
-    this.logger.debug("confirmacao assistido Plex Discover", {
-      ratingKey,
-      watched,
-      confirmed
-    });
-    if (confirmed === true || confirmed === undefined) {
+    if (!stateChanged) {
+      throw new Error(
+        `Plex Discover não confirmou alteração de assistido para ratingKey=${ratingKey}`
+      );
+    }
+
+    if (!watched) {
       return;
     }
 
-    throw new Error(
-      `Plex Discover não confirmou alteração de assistido para ratingKey=${ratingKey}`
-    );
+    try {
+      await this.publishWatchHistory(ratingKey);
+    } catch (error) {
+      this.logger.debug("falha ao publicar historico assistido Plex", {
+        ratingKey,
+        error: String(error)
+      });
+    }
   }
 
   async setWatchlisted(ratingKey: string, watchlisted: boolean): Promise<void> {
@@ -415,6 +438,137 @@ export class PlexDiscoverClient {
       // Nem todo conteúdo expõe estado completo via endpoint.
       return undefined;
     }
+    return false;
+  }
+
+  private async applyWatchedAction(
+    endpoint: string,
+    params: Record<string, string>,
+    ratingKey: string,
+    watched: boolean,
+    provider: "discover" | "metadata"
+  ): Promise<boolean | undefined> {
+    this.logger.debug("aplicando assistido via Plex Discover action", {
+      provider,
+      ratingKey,
+      watched,
+      endpoint,
+      params
+    });
+    await this.requestAction(endpoint, params);
+
+    const confirmed = await this.confirmWatchedState(ratingKey, watched);
+    this.logger.debug("confirmacao assistido Plex Discover", {
+      provider,
+      ratingKey,
+      watched,
+      confirmed
+    });
+    return confirmed;
+  }
+
+  private async publishWatchHistory(ratingKey: string): Promise<void> {
+    const metadata = await this.getMetadataDetails(ratingKey);
+    const params = buildTimelineParams(metadata, ratingKey);
+    if (!params) {
+      return;
+    }
+
+    const minViewedAt = Math.max(0, Math.floor(Date.now() / 1000) - 180);
+    for (const endpoint of buildTimelineEndpointCandidates()) {
+      try {
+        this.logger.debug("publicando historico assistido via Plex timeline", {
+          ratingKey,
+          endpoint,
+          params
+        });
+        const response = await this.request("GET", endpoint, params);
+        if (response.status < 200 || response.status >= 300) {
+          throw new Error(
+            `Erro Discover GET ${endpoint}: status=${response.status} body=${truncate(response.text)}`
+          );
+        }
+
+        const confirmed = await this.confirmWatchHistoryRecorded(ratingKey, minViewedAt);
+        this.logger.debug("confirmacao historico assistido Plex", {
+          ratingKey,
+          endpoint,
+          confirmed
+        });
+        if (confirmed) {
+          return;
+        }
+      } catch (error) {
+        this.logger.debug("falha ao publicar timeline assistida Plex", {
+          ratingKey,
+          endpoint,
+          error: String(error)
+        });
+      }
+    }
+  }
+
+  private async confirmWatchHistoryRecorded(
+    ratingKey: string,
+    minViewedAt: number
+  ): Promise<boolean> {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (await this.hasRecentWatchHistoryRecord(ratingKey, minViewedAt)) {
+        return true;
+      }
+      if (attempt < 3) {
+        await sleep(350);
+      }
+    }
+    return false;
+  }
+
+  private async hasRecentWatchHistoryRecord(
+    ratingKey: string,
+    minViewedAt: number
+  ): Promise<boolean> {
+    for (const endpoint of WATCHED_HISTORY_ENDPOINTS) {
+      try {
+        const response = await this.requestJson<DiscoverListResponse>(
+          "GET",
+          endpoint,
+          {
+            type: "99",
+            sort: "viewedAt:desc",
+            "X-Plex-Container-Start": "0",
+            "X-Plex-Container-Size": "20"
+          },
+          true
+        );
+
+        if (!response) {
+          continue;
+        }
+
+        const nodes = ensureArrayOfRecords(response.MediaContainer?.Metadata);
+        if (
+          nodes.some((node) => {
+            const viewedAt = toNumber(node.viewedAt) ?? 0;
+            return asString(node.ratingKey) === ratingKey && viewedAt >= minViewedAt;
+          })
+        ) {
+          return true;
+        }
+
+        if (
+          nodes.length > 0 &&
+          nodes.every((node) => {
+            const viewedAt = toNumber(node.viewedAt) ?? 0;
+            return viewedAt > 0 && viewedAt < minViewedAt;
+          })
+        ) {
+          return false;
+        }
+      } catch {
+        continue;
+      }
+    }
+
     return false;
   }
 
@@ -917,10 +1071,56 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
   });
 }
 
-function buildWatchedActionParams(ratingKey: string): Record<string, string> {
+function buildDiscoverWatchedActionParams(ratingKey: string): Record<string, string> {
+  return {
+    ratingKey
+  };
+}
+
+function buildMetadataWatchedActionParams(ratingKey: string): Record<string, string> {
   return {
     key: ratingKey,
     identifier: "com.plexapp.plugins.library"
+  };
+}
+
+function buildTimelineEndpointCandidates(): string[] {
+  return [
+    `${DISCOVER_BASE}/timeline`,
+    `${DISCOVER_BASE}/:/timeline`,
+    `${VOD_BASE}/timeline`,
+    `${VOD_BASE}/:/timeline`,
+    `${METADATA_BASE}/timeline`,
+    `${METADATA_BASE}/:/timeline`
+  ];
+}
+
+function buildTimelineParams(
+  metadata: Record<string, unknown> | undefined,
+  fallbackRatingKey: string
+): Record<string, string> | undefined {
+  const type = asString(metadata?.type);
+  if (type !== "movie" && type !== "episode") {
+    return undefined;
+  }
+
+  const ratingKey = asString(metadata?.ratingKey) ?? fallbackRatingKey;
+  const duration = toNumber(metadata?.duration);
+  if (!ratingKey || typeof duration !== "number" || duration <= 0) {
+    return undefined;
+  }
+
+  const key = asString(metadata?.key) ?? `/library/metadata/${ratingKey}`;
+  const guid = asString(metadata?.guid) ?? `plex://${type}/${ratingKey}`;
+  const stoppedTime = duration > 1000 ? duration - 1000 : duration;
+  return {
+    key,
+    ratingKey,
+    state: "stopped",
+    time: String(stoppedTime),
+    duration: String(duration),
+    playbackTime: "1",
+    guid
   };
 }
 

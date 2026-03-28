@@ -374,7 +374,10 @@ export class SyncEngine {
             preferredObsidianWatchedByKey.get(item.ratingKey),
             posterUrlBuilder,
             options.overrideSeasonRatingKeys,
-            options.overrideEpisodeRatingKeys
+            options.overrideEpisodeRatingKeys,
+            options.overrideSeasonWatchedByKey,
+            options.overrideEpisodeWatchedByKey,
+            options.overrideSeasonCheckboxSnapshotsByKey
           );
           if (result.noteCreated) {
             report.createdNotes += 1;
@@ -485,7 +488,10 @@ export class SyncEngine {
     preferredObsidianWatched?: boolean,
     posterUrlBuilder?: (thumb: string | undefined) => string | undefined,
     overrideSeasonRatingKeys?: Set<string>,
-    overrideEpisodeRatingKeys?: Set<string>
+    overrideEpisodeRatingKeys?: Set<string>,
+    overrideSeasonWatchedByKey?: Map<string, boolean>,
+    overrideEpisodeWatchedByKey?: Map<string, boolean>,
+    overrideSeasonCheckboxSnapshotsByKey?: Map<string, string>
   ): Promise<SyncItemResult> {
     const noteRoot = normalizeVaultPath(settings.notesFolder);
     const previousRelPath = previousState?.notePath;
@@ -668,6 +674,9 @@ export class SyncEngine {
         showWatchedOverride,
         overrideSeasonRatingKeys,
         overrideEpisodeRatingKeys,
+        overrideSeasonWatchedByKey,
+        overrideEpisodeWatchedByKey,
+        overrideSeasonCheckboxSnapshotsByKey,
         logger: this.logger,
         store: this.store,
         posterUrlBuilder

@@ -24,6 +24,16 @@ export function parseSectionsXml(xml: string): PlexSection[] {
 }
 
 export function parseItemsXml(xml: string, libraryTitle: string): PlexMediaItem[] {
+  return parseItemsPageXml(xml, libraryTitle).items;
+}
+
+export interface ParsedItemsPage {
+  items: PlexMediaItem[];
+  nodeCount: number;
+  totalSize?: number;
+}
+
+export function parseItemsPageXml(xml: string, libraryTitle: string): ParsedItemsPage {
   const root = safeParse(xml);
   const media = getMediaContainer(root);
   const videos = ensureArray(media.Video);
@@ -40,7 +50,11 @@ export function parseItemsXml(xml: string, libraryTitle: string): PlexMediaItem[
     dedup.set(item.ratingKey, item);
   }
 
-  return Array.from(dedup.values());
+  return {
+    items: Array.from(dedup.values()),
+    nodeCount: nodes.length,
+    totalSize: typeof media.totalSize === "number" ? media.totalSize : undefined
+  };
 }
 
 function safeParse(xml: string): Record<string, unknown> {

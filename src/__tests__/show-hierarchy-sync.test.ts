@@ -244,7 +244,7 @@ describe("show-hierarchy-sync", () => {
     expect(updatedSeason1.frontmatter.assistido).toBe(true);
     expect(updatedSeason1.frontmatter.episodios_assistidos).toBe(2);
     expect(updatedSeason2.frontmatter.assistido).toBe(false);
-    expect(updatedSeason2.frontmatter.episodios_assistidos).toBe(0);
+    expect(updatedSeason2.frontmatter.episodios_assistidos).toBeUndefined();
   });
 
   it("faz fallback para episodios da temporada quando o client nao suporta escrita direta de temporada", async () => {
@@ -311,6 +311,198 @@ describe("show-hierarchy-sync", () => {
     });
 
     expect(markWatched).not.toHaveBeenCalled();
+  });
+
+  it("aplica override de episodio apenas ao episodio explicitamente alvo", async () => {
+    const noteRoot = "Media-Plex";
+    const showFolder = "Series/Dark";
+    const store = new FakeVaultStore({
+      [`${noteRoot}/${showFolder}/Temporada 1/01 - Segredos.md`]: renderNote(
+        {
+          tipo: "episode",
+          plex_rating_key: "ep-1",
+          plex_parent_rating_key: "season-1",
+          serie_rating_key: "show-1",
+          assistido: true
+        },
+        "# 01 - Segredos\n"
+      ),
+      [`${noteRoot}/${showFolder}/Temporada 1/02 - Mentiras.md`]: renderNote(
+        {
+          tipo: "episode",
+          plex_rating_key: "ep-2",
+          plex_parent_rating_key: "season-1",
+          serie_rating_key: "show-1",
+          assistido: false
+        },
+        "# 02 - Mentiras\n"
+      )
+    });
+    const app = buildApp(store);
+    const markWatched = vi.fn(async () => {});
+
+    await syncShowHierarchy({
+      app: app as never,
+      noteRoot,
+      showNoteRelativePath: `${showFolder}/Dark.md`,
+      showItem: buildShowItem(),
+      client: { markWatched },
+      overrideSeasonRatingKeys: new Set<string>(),
+      overrideEpisodeRatingKeys: new Set(["ep-1"]),
+      logger: new Logger(false),
+      store: store as never
+    });
+
+    expect(markWatched).toHaveBeenCalledTimes(1);
+    expect(markWatched).toHaveBeenCalledWith("ep-1", true);
+
+    const updatedSeason1 = await store.readNote(
+      `${noteRoot}/${showFolder}/Temporada 1/- Temporada 1.md`
+    );
+    const updatedSeason2 = await store.readNote(
+      `${noteRoot}/${showFolder}/Temporada 2/- Temporada 2.md`
+    );
+    expect(updatedSeason1.body).toContain("- [x] [[Series/Dark/Temporada 1/01 - Segredos|01 - Segredos]]");
+    expect(updatedSeason1.body).toContain("- [ ] [[Series/Dark/Temporada 1/02 - Mentiras|02 - Mentiras]]");
+    expect(updatedSeason2.exists).toBe(false);
+  });
+
+  it("preserva override explicito de episodio mesmo quando a nota relida ainda esta desmarcada", async () => {
+    const noteRoot = "Media-Plex";
+    const showFolder = "Series/Dark";
+    const store = new FakeVaultStore({
+      [`${noteRoot}/${showFolder}/Temporada 1/01 - Segredos.md`]: renderNote(
+        {
+          tipo: "episode",
+          plex_rating_key: "ep-1",
+          plex_parent_rating_key: "season-1",
+          serie_rating_key: "show-1",
+          assistido: false
+        },
+        "# 01 - Segredos\n"
+      ),
+      [`${noteRoot}/${showFolder}/Temporada 1/02 - Mentiras.md`]: renderNote(
+        {
+          tipo: "episode",
+          plex_rating_key: "ep-2",
+          plex_parent_rating_key: "season-1",
+          serie_rating_key: "show-1",
+          assistido: false
+        },
+        "# 02 - Mentiras\n"
+      )
+    });
+    const app = buildApp(store);
+    const markWatched = vi.fn(async () => {});
+
+    await syncShowHierarchy({
+      app: app as never,
+      noteRoot,
+      showNoteRelativePath: `${showFolder}/Dark.md`,
+      showItem: buildShowItem(),
+      client: { markWatched },
+      overrideSeasonRatingKeys: new Set<string>(),
+      overrideEpisodeRatingKeys: new Set(["ep-1"]),
+      overrideEpisodeWatchedByKey: new Map([["ep-1", true]]),
+      logger: new Logger(false),
+      store: store as never
+    });
+
+    expect(markWatched).toHaveBeenCalledTimes(1);
+    expect(markWatched).toHaveBeenCalledWith("ep-1", true);
+
+    const updatedEpisode = await store.readNote(
+      `${noteRoot}/${showFolder}/Temporada 1/01 - Segredos.md`
+    );
+    const updatedSeason1 = await store.readNote(
+      `${noteRoot}/${showFolder}/Temporada 1/- Temporada 1.md`
+    );
+
+    expect(updatedEpisode.frontmatter.assistido).toBe(true);
+    expect(updatedSeason1.body).toContain("- [x] [[Series/Dark/Temporada 1/01 - Segredos|01 - Segredos]]");
+    expect(updatedSeason1.body).toContain("- [ ] [[Series/Dark/Temporada 1/02 - Mentiras|02 - Mentiras]]");
+  });
+
+  it("nao propaga assistido da temporada quando a intencao explicita veio so dos checkboxes", async () => {
+    const noteRoot = "Media-Plex";
+    const showFolder = "Series/Dark";
+    const store = new FakeVaultStore({
+      [`${noteRoot}/${showFolder}/Temporada 1/- Temporada 1.md`]: renderNote(
+        {
+          tipo: "season",
+          plex_rating_key: "season-1",
+          serie_rating_key: "show-1",
+          assistido: false
+        },
+        "# Temporada 1\n"
+      )
+    });
+    const app = buildApp(store);
+    const markWatched = vi.fn(async () => {});
+
+    await syncShowHierarchy({
+      app: app as never,
+      noteRoot,
+      showNoteRelativePath: `${showFolder}/Dark.md`,
+      showItem: buildShowItem(),
+      client: { markWatched },
+      overrideSeasonRatingKeys: new Set(["season-1"]),
+      overrideSeasonCheckboxSnapshotsByKey: new Map([["season-1", "ep-1:1,ep-2:0"]]),
+      logger: new Logger(false),
+      store: store as never
+    });
+
+    expect(markWatched).toHaveBeenCalledTimes(1);
+    expect(markWatched).toHaveBeenCalledWith("ep-1", true);
+
+    const updatedSeason = await store.readNote(
+      `${noteRoot}/${showFolder}/Temporada 1/- Temporada 1.md`
+    );
+    const updatedEpisode1 = await store.readNote(
+      `${noteRoot}/${showFolder}/Temporada 1/01 - Segredos.md`
+    );
+    const updatedEpisode2 = await store.readNote(
+      `${noteRoot}/${showFolder}/Temporada 1/02 - Mentiras.md`
+    );
+
+    expect(updatedSeason.frontmatter.assistido).toBe(false);
+    expect(updatedEpisode1.frontmatter.assistido).toBe(true);
+    expect(updatedEpisode2.frontmatter.assistido).toBe(false);
+  });
+
+  it("propaga erro quando o write explicito do episodio falha no Plex", async () => {
+    const noteRoot = "Media-Plex";
+    const showFolder = "Series/Dark";
+    const store = new FakeVaultStore({
+      [`${noteRoot}/${showFolder}/Temporada 1/01 - Segredos.md`]: renderNote(
+        {
+          tipo: "episode",
+          plex_rating_key: "ep-1",
+          plex_parent_rating_key: "season-1",
+          serie_rating_key: "show-1",
+          assistido: true
+        },
+        "# 01 - Segredos\n"
+      )
+    });
+    const app = buildApp(store);
+    const markWatched = vi.fn(async () => {
+      throw new Error("plex write failed");
+    });
+
+    await expect(
+      syncShowHierarchy({
+        app: app as never,
+        noteRoot,
+        showNoteRelativePath: `${showFolder}/Dark.md`,
+        showItem: buildShowItem(),
+        client: { markWatched },
+        overrideSeasonRatingKeys: new Set<string>(),
+        overrideEpisodeRatingKeys: new Set(["ep-1"]),
+        logger: new Logger(false),
+        store: store as never
+      })
+    ).rejects.toThrow("episodio ep-1 -> Error: plex write failed");
   });
 });
 

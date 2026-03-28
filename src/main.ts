@@ -36,6 +36,9 @@ export default class PlexObsidianSyncPlugin extends Plugin {
   private pendingTargetOnlyRatingKeys = new Set<string>();
   private pendingOverrideSeasonRatingKeys = new Set<string>();
   private pendingOverrideEpisodeRatingKeys = new Set<string>();
+  private pendingOverrideSeasonWatchedByKey = new Map<string, boolean>();
+  private pendingOverrideEpisodeWatchedByKey = new Map<string, boolean>();
+  private pendingOverrideSeasonCheckboxSnapshotsByKey = new Map<string, string>();
   private pendingDeletedRatingKeys = new Set<string>();
   private loginInProgress = false;
   private pendingRetrySync: (() => void) | null = null;
@@ -411,7 +414,10 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     targetRatingKeys?: string[],
     deletedRatingKeys?: string[],
     overrideSeasonRatingKeys?: Set<string>,
-    overrideEpisodeRatingKeys?: Set<string>
+    overrideEpisodeRatingKeys?: Set<string>,
+    overrideSeasonWatchedByKey?: Map<string, boolean>,
+    overrideEpisodeWatchedByKey?: Map<string, boolean>,
+    overrideSeasonCheckboxSnapshotsByKey?: Map<string, string>
   ): Promise<{
     report: SyncReport;
     skipped: boolean;
@@ -439,7 +445,10 @@ export default class PlexObsidianSyncPlugin extends Plugin {
           targetRatingKeys,
           deletedRatingKeys,
           overrideSeasonRatingKeys,
-          overrideEpisodeRatingKeys
+          overrideEpisodeRatingKeys,
+          overrideSeasonWatchedByKey,
+          overrideEpisodeWatchedByKey,
+          overrideSeasonCheckboxSnapshotsByKey
         );
       };
       return null;
@@ -455,7 +464,10 @@ export default class PlexObsidianSyncPlugin extends Plugin {
         targetRatingKeys,
         deletedRatingKeys,
         overrideSeasonRatingKeys,
-        overrideEpisodeRatingKeys
+        overrideEpisodeRatingKeys,
+        overrideSeasonWatchedByKey,
+        overrideEpisodeWatchedByKey,
+        overrideSeasonCheckboxSnapshotsByKey
       });
 
       this.handleReport(result.report, result.skipped);
@@ -802,11 +814,19 @@ export default class PlexObsidianSyncPlugin extends Plugin {
       const targetOnlyKeys = Array.from(this.pendingTargetOnlyRatingKeys);
       const overrideSeasonKeys = new Set(this.pendingOverrideSeasonRatingKeys);
       const overrideEpisodeKeys = new Set(this.pendingOverrideEpisodeRatingKeys);
+      const overrideSeasonWatchedByKey = new Map(this.pendingOverrideSeasonWatchedByKey);
+      const overrideEpisodeWatchedByKey = new Map(this.pendingOverrideEpisodeWatchedByKey);
+      const overrideSeasonCheckboxSnapshotsByKey = new Map(
+        this.pendingOverrideSeasonCheckboxSnapshotsByKey
+      );
       this.pendingPreferredObsidianKeys.clear();
       this.pendingPreferredObsidianWatchedByKey.clear();
       this.pendingTargetOnlyRatingKeys.clear();
       this.pendingOverrideSeasonRatingKeys.clear();
       this.pendingOverrideEpisodeRatingKeys.clear();
+      this.pendingOverrideSeasonWatchedByKey.clear();
+      this.pendingOverrideEpisodeWatchedByKey.clear();
+      this.pendingOverrideSeasonCheckboxSnapshotsByKey.clear();
       const allTargetKeys = [...preferredKeys, ...targetOnlyKeys];
       void this.executeSync(
         "note-modify",
@@ -816,7 +836,10 @@ export default class PlexObsidianSyncPlugin extends Plugin {
         allTargetKeys,
         undefined,
         overrideSeasonKeys,
-        overrideEpisodeKeys
+        overrideEpisodeKeys,
+        overrideSeasonWatchedByKey,
+        overrideEpisodeWatchedByKey,
+        overrideSeasonCheckboxSnapshotsByKey
       );
     }, MODIFY_SYNC_DEBOUNCE_MS);
   }
@@ -832,27 +855,46 @@ export default class PlexObsidianSyncPlugin extends Plugin {
     this.watchedSignatureByPath.set(filePath, nextSignature);
 
     if (previousSignature !== nextSignature) {
+      let shouldScheduleSync = false;
       const ratingKey = extractRatingKeyFromSignature(nextSignature);
       const serieRatingKey = extractSerieRatingKeyFromSignature(nextSignature);
       if (serieRatingKey) {
-        // Season/episode note: target the parent show for syncShowHierarchy
-        // but do NOT mark it as preferred so show-level watched is not forced
-        this.pendingTargetOnlyRatingKeys.add(serieRatingKey);
         const noteType = extractTypeFromSignature(nextSignature);
+        const previousWatched = extractWatchedFromSignature(previousSignature);
+        const nextWatched = extractWatchedFromSignature(nextSignature);
+        const watchedChanged = previousWatched !== nextWatched;
         const seasonCheckboxChanged =
           noteType === "season" &&
           extractSeasonCheckboxSnapshotFromSignature(previousSignature) !==
             extractSeasonCheckboxSnapshotFromSignature(nextSignature);
-        if (ratingKey && noteType === "season") {
-          // Any season-note modification should re-evaluate that specific season.
+        let shouldScheduleHierarchySync = false;
+
+        if (ratingKey && noteType === "season" && watchedChanged && typeof nextWatched === "boolean") {
+          shouldScheduleHierarchySync = true;
           this.pendingOverrideSeasonRatingKeys.add(ratingKey);
+          this.pendingOverrideSeasonWatchedByKey.set(ratingKey, nextWatched);
         }
-        if (ratingKey && noteType === "episode") {
-          // Any episode-note modification should re-evaluate that specific episode.
-          this.pendingOverrideEpisodeRatingKeys.add(ratingKey);
-        }
+
         if (ratingKey && noteType === "season" && seasonCheckboxChanged) {
+          shouldScheduleHierarchySync = true;
           this.pendingOverrideSeasonRatingKeys.add(ratingKey);
+          this.pendingOverrideSeasonCheckboxSnapshotsByKey.set(
+            ratingKey,
+            extractSeasonCheckboxSnapshotFromSignature(nextSignature)
+          );
+        }
+
+        if (ratingKey && noteType === "episode" && watchedChanged && typeof nextWatched === "boolean") {
+          shouldScheduleHierarchySync = true;
+          this.pendingOverrideEpisodeRatingKeys.add(ratingKey);
+          this.pendingOverrideEpisodeWatchedByKey.set(ratingKey, nextWatched);
+        }
+
+        if (shouldScheduleHierarchySync) {
+          // Season/episode note: target the parent show for syncShowHierarchy
+          // but do NOT mark it as preferred so show-level watched is not forced
+          this.pendingTargetOnlyRatingKeys.add(serieRatingKey);
+          shouldScheduleSync = true;
         }
       } else if (ratingKey) {
         this.pendingPreferredObsidianKeys.add(ratingKey);
@@ -860,8 +902,12 @@ export default class PlexObsidianSyncPlugin extends Plugin {
         if (typeof watched === "boolean") {
           this.pendingPreferredObsidianWatchedByKey.set(ratingKey, watched);
         }
+        shouldScheduleSync = true;
       }
-      this.scheduleModifySync();
+
+      if (shouldScheduleSync) {
+        this.scheduleModifySync();
+      }
     }
   }
 
